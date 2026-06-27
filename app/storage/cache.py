@@ -113,6 +113,7 @@ def _result_from_dict(data: dict[str, Any]) -> AnalysisResult:
         query=data["query"],
         generated_at=datetime.fromisoformat(data["generated_at"]),
         ranked=ranked,
+        mexc_futures_available=data.get("mexc_futures_available"),
     )
 
 

@@ -17,11 +17,13 @@ class ChartAnalyzer:
         providers: list[ExchangeProvider],
         cache: AnalysisCache,
         *,
+        mexc_futures_checker: object | None = None,
         max_candles: int = 1000,
         quote_policy_year: int = 2015,
     ) -> None:
         self.providers = providers
         self.cache = cache
+        self.mexc_futures_checker = mexc_futures_checker
         self.max_candles = max_candles
         self.quote_policy_year = quote_policy_year
 
@@ -35,7 +37,13 @@ class ChartAnalyzer:
         markets = await self._find_markets(normalized)
         scored = await self._score_markets(markets)
         ranked = sorted(scored, key=lambda item: item.score, reverse=True)
-        result = AnalysisResult(query=normalized, generated_at=utc_now(), ranked=ranked)
+        mexc_futures_available = await self._check_mexc_futures(normalized)
+        result = AnalysisResult(
+            query=normalized,
+            generated_at=utc_now(),
+            ranked=ranked,
+            mexc_futures_available=mexc_futures_available,
+        )
         self.cache.set(normalized, result)
         return result
 
@@ -79,6 +87,19 @@ class ChartAnalyzer:
             query_birth_year=birth_year,
             quote_policy_year=self.quote_policy_year,
         )
+
+    async def _check_mexc_futures(self, asset: str) -> bool | None:
+        if self.mexc_futures_checker is None:
+            return None
+        checker = self.mexc_futures_checker
+        has_market = getattr(checker, "has_futures_market", None)
+        if has_market is None:
+            return None
+        try:
+            return await has_market(asset)
+        except Exception as exc:
+            logger.warning("MEXC futures check failed for %s: %s", asset, exc)
+            return None
 
     def _provider_for(self, exchange_id: str) -> ExchangeProvider | None:
         return next((provider for provider in self.providers if provider.exchange_id == exchange_id), None)

@@ -48,6 +48,24 @@ class CcxtExchangeProvider(ExchangeProvider):
 
         return found
 
+    async def has_futures_market(self, base: str) -> bool | None:
+        if self.exchange_id != "mexc":
+            return None
+
+        try:
+            markets = await self._load_markets()
+        except Exception as exc:
+            raise ProviderError(str(exc)) from exc
+
+        for market in markets.values():
+            if str(market.get("base", "")).upper() != base:
+                continue
+            if str(market.get("quote", "")).upper() != "USDT":
+                continue
+            if market.get("swap") or market.get("future") or market.get("contract"):
+                return True
+        return False
+
     async def fetch_hourly_candles(self, market: MarketSymbol, *, limit: int) -> list[Candle]:
         try:
             rows = await self.client.fetch_ohlcv(market.market_symbol, timeframe="1h", limit=limit)

@@ -11,7 +11,7 @@ from aiogram.types import Message
 from app.bot.formatting import format_analysis, format_compare
 from app.core.analyzer import ChartAnalyzer
 from app.core.config import Settings
-from app.providers.registry import build_default_providers
+from app.providers.registry import build_default_providers, build_mexc_futures_checker
 from app.storage.cache import AnalysisCache
 
 logger = logging.getLogger(__name__)
@@ -59,11 +59,13 @@ async def run_bot(settings: Settings) -> None:
 
     cache = AnalysisCache(settings.cache_db_path, settings.cache_ttl_seconds)
     providers = build_default_providers()
+    mexc_futures_checker = build_mexc_futures_checker()
     analyzer = ChartAnalyzer(
         providers,
         cache,
         max_candles=settings.max_candles,
         quote_policy_year=settings.quote_policy_year,
+        mexc_futures_checker=mexc_futures_checker,
     )
 
     bot = Bot(
@@ -79,6 +81,7 @@ async def run_bot(settings: Settings) -> None:
     finally:
         for provider in providers:
             await provider.close()
+        await mexc_futures_checker.close()
         await bot.session.close()
 
 

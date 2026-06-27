@@ -18,11 +18,21 @@ def format_analysis(result: AnalysisResult) -> str:
         f"<b>{best.symbol.tradingview_symbol}</b>",
         f"Рейтинг: <b>{best.score:.2f}</b>",
         "",
+        _format_mexc_futures(result.mexc_futures_available),
+        "",
         _format_metrics(best),
         "",
         "Почему он выбран:",
         *[f"✓ {reason}" for reason in best.reasons[:4]],
     ]
+
+    if result.mexc_futures_available is False:
+        lines.extend(
+            [
+                "",
+                "⚠️ Предупреждение: монета не найдена на фьючерсах MEXC.",
+            ]
+        )
 
     if best.penalties:
         lines.extend(["", "Что снижает оценку:", *[f"• {penalty}" for penalty in best.penalties[:3]]])
@@ -39,7 +49,14 @@ def format_compare(result: AnalysisResult) -> str:
     if not result.ranked:
         return "Нет данных для сравнения."
 
-    lines = [f"Сравнение графиков для <b>{result.query}</b>:", ""]
+    lines = [
+        f"Сравнение графиков для <b>{result.query}</b>:",
+        _format_mexc_futures(result.mexc_futures_available),
+    ]
+    if result.mexc_futures_available is False:
+        lines.append("⚠️ Нет фьючерсов на MEXC.")
+    lines.append("")
+
     for index, item in enumerate(result.ranked[:10], start=1):
         defect_mark = "чистый" if not item.metrics.has_defects else "есть дефекты"
         lines.append(
@@ -62,6 +79,14 @@ def _format_metrics(item: ChartScore) -> str:
             f"Подозрительные скачки: {metrics.spike_count}",
         ]
     )
+
+
+def _format_mexc_futures(value: bool | None) -> str:
+    if value is True:
+        return "Фьючерсы MEXC: Да"
+    if value is False:
+        return "Фьючерсы MEXC: Нет"
+    return "Фьючерсы MEXC: не удалось проверить"
 
 
 def _history_label(item: ChartScore) -> str:

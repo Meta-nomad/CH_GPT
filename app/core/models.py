@@ -72,6 +72,7 @@ class AnalysisResult:
     query: str
     generated_at: datetime
     ranked: list[ChartScore]
+    mexc_futures_available: bool | None = None
 
     @property
     def best(self) -> ChartScore | None:

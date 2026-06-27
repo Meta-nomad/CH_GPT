@@ -1,5 +1,6 @@
 from app.providers.base import ExchangeProvider
 from app.providers.ccxt_provider import CcxtExchangeProvider
+from app.providers.mexc_futures import MexcFuturesChecker
 
 
 DEFAULT_EXCHANGES: tuple[tuple[str, str, str], ...] = (
@@ -27,3 +28,7 @@ def build_default_providers() -> list[ExchangeProvider]:
         except Exception:
             continue
     return providers
+
+
+def build_mexc_futures_checker() -> MexcFuturesChecker:
+    return MexcFuturesChecker()

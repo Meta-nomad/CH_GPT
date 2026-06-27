@@ -16,6 +16,11 @@ class MemoryCache:
         self.value = result
 
 
+class FakeMexcFuturesChecker:
+    async def has_futures_market(self, base: str) -> bool | None:
+        return base == "SUI"
+
+
 class FakeProvider(ExchangeProvider):
     exchange_id = "fake"
     exchange_name = "Fake"
@@ -52,10 +57,16 @@ def test_normalize_asset() -> None:
 
 
 async def test_analyzer_ranks_markets() -> None:
-    analyzer = ChartAnalyzer([FakeProvider()], MemoryCache(), max_candles=100)
+    analyzer = ChartAnalyzer(
+        [FakeProvider()],
+        MemoryCache(),
+        max_candles=100,
+        mexc_futures_checker=FakeMexcFuturesChecker(),
+    )
 
     result = await analyzer.analyze("SUI")
 
     assert result.best is not None
     assert result.best.symbol.tradingview_symbol == "FAKE:SUIUSDT"
     assert len(result.ranked) == 2
+    assert result.mexc_futures_available is True

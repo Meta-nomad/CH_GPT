@@ -22,5 +22,8 @@ class ExchangeProvider(ABC):
     async def fetch_hourly_candles(self, market: MarketSymbol, *, limit: int) -> list[Candle]:
         raise NotImplementedError
 
+    async def has_futures_market(self, base: str) -> bool | None:
+        return None
+
     async def close(self) -> None:
         return None
