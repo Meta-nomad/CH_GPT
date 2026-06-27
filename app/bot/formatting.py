@@ -16,7 +16,7 @@ def format_analysis(result: AnalysisResult) -> str:
         "🏆 Лучший график для TradingView",
         "",
         f"<b>{best.symbol.tradingview_symbol}</b>",
-        f"Рейтинг: <b>{best.score:.2f}</b>",
+        f"Оценка качества: <b>{best.score:.2f}</b>",
         "",
         _format_mexc_futures(result.mexc_futures_available),
         "",

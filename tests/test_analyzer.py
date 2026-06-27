@@ -70,3 +70,48 @@ async def test_analyzer_ranks_markets() -> None:
     assert result.best.symbol.tradingview_symbol == "FAKE:SUIUSDT"
     assert len(result.ranked) == 2
     assert result.mexc_futures_available is True
+
+
+class HistoryPriorityProvider(ExchangeProvider):
+    exchange_id = "history"
+    exchange_name = "History"
+    tradingview_exchange = "HISTORY"
+
+    async def find_markets(self, base: str, quotes: list[Quote]) -> list[MarketSymbol]:
+        return [
+            MarketSymbol("history", "History", base, Quote.USDT, f"{base}/USDT:SHORT", "KUCOIN"),
+            MarketSymbol("history", "History", base, Quote.USDT, f"{base}/USDT:LONG", "GATEIO"),
+        ]
+
+    async def fetch_hourly_candles(self, market: MarketSymbol, *, limit: int) -> list[Candle]:
+        start = datetime(2026, 5, 1, tzinfo=timezone.utc)
+        candles = []
+        for index in range(24):
+            price = 10 + index * 0.01
+            candles.append(
+                Candle(
+                    timestamp=start + timedelta(hours=index),
+                    open=price,
+                    high=price + 0.1,
+                    low=price - 0.1,
+                    close=price,
+                    volume=10_000,
+                )
+            )
+        return candles
+
+    async def find_earliest_hourly_candle(self, market: MarketSymbol) -> Candle | None:
+        if market.tradingview_exchange == "GATEIO":
+            timestamp = datetime(2026, 3, 1, tzinfo=timezone.utc)
+        else:
+            timestamp = datetime(2026, 5, 1, tzinfo=timezone.utc)
+        return Candle(timestamp, 10, 10.1, 9.9, 10, 10_000)
+
+
+async def test_analyzer_prefers_longer_history_before_score() -> None:
+    analyzer = ChartAnalyzer([HistoryPriorityProvider()], MemoryCache(), max_candles=24)
+
+    result = await analyzer.analyze("KAS")
+
+    assert result.best is not None
+    assert result.best.symbol.tradingview_exchange == "GATEIO"

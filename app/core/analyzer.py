@@ -9,7 +9,7 @@ from app.providers.base import ExchangeProvider, ProviderError
 from app.storage.cache import AnalysisCache
 
 logger = logging.getLogger(__name__)
-CACHE_VERSION = "history-v2"
+CACHE_VERSION = "history-primary-v3"
 
 
 class ChartAnalyzer:
@@ -38,7 +38,7 @@ class ChartAnalyzer:
 
         markets = await self._find_markets(normalized)
         scored = await self._score_markets(markets)
-        ranked = sorted(scored, key=lambda item: item.score, reverse=True)
+        ranked = sorted(scored, key=_rank_key, reverse=True)
         mexc_futures_available = await self._check_mexc_futures(normalized)
         result = AnalysisResult(
             query=normalized,
@@ -119,3 +119,18 @@ def normalize_asset(value: str) -> str:
         if cleaned.endswith(quote):
             cleaned = cleaned[: -len(quote)]
     return "".join(ch for ch in cleaned if ch.isalnum())
+
+
+
+def _rank_key(item: ChartScore) -> tuple[int, float, int, float]:
+    metrics = item.metrics
+    expected = max(metrics.expected_candles, 1)
+    gap_ratio = metrics.gap_count / expected
+    is_usable = int(
+        gap_ratio <= 0.05
+        and metrics.flat_candle_ratio <= 0.05
+        and metrics.zero_volume_ratio <= 0.10
+        and metrics.spike_count <= 10
+    )
+    quote_priority = 1 if item.symbol.quote is Quote.USDT else 0
+    return (is_usable, metrics.history_days, quote_priority, item.score)
