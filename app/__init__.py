@@ -1,0 +1,1 @@
+"""TradingView chart selector bot."""
