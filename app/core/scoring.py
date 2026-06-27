@@ -8,12 +8,12 @@ from app.core.models import Candle, ChartMetrics, ChartScore, MarketSymbol, Quot
 SECONDS_PER_HOUR = 3600
 
 
-def calculate_metrics(candles: list[Candle]) -> ChartMetrics:
+def calculate_metrics(candles: list[Candle], *, history_start_at: datetime | None = None) -> ChartMetrics:
     if not candles:
-        return ChartMetrics(0, None, None, 0, 0, 0, 0, 0, 0, 0)
+        return ChartMetrics(0, history_start_at, None, 0, 0, 0, 0, 0, 0, 0)
 
     ordered = sorted(candles, key=lambda candle: candle.timestamp)
-    first = ordered[0].timestamp
+    first = history_start_at or ordered[0].timestamp
     last = ordered[-1].timestamp
     history_days = max((last - first).total_seconds() / 86_400, 0)
     expected = int((last - first).total_seconds() // SECONDS_PER_HOUR) + 1

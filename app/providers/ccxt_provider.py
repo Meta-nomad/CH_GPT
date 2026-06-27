@@ -72,19 +72,23 @@ class CcxtExchangeProvider(ExchangeProvider):
         except Exception as exc:
             raise ProviderError(str(exc)) from exc
 
-        candles: list[Candle] = []
-        for timestamp_ms, open_, high, low, close, volume in rows:
-            candles.append(
-                Candle(
-                    timestamp=datetime.fromtimestamp(timestamp_ms / 1000, tz=timezone.utc),
-                    open=float(open_),
-                    high=float(high),
-                    low=float(low),
-                    close=float(close),
-                    volume=float(volume or 0),
-                )
+        return [_row_to_candle(row) for row in rows]
+
+    async def find_earliest_hourly_candle(self, market: MarketSymbol) -> Candle | None:
+        since = int(datetime(2010, 1, 1, tzinfo=timezone.utc).timestamp() * 1000)
+        try:
+            rows = await self.client.fetch_ohlcv(
+                market.market_symbol,
+                timeframe="1h",
+                since=since,
+                limit=1,
             )
-        return candles
+        except Exception as exc:
+            raise ProviderError(str(exc)) from exc
+
+        if not rows:
+            return None
+        return _row_to_candle(rows[0])
 
     async def close(self) -> None:
         await self.client.close()
@@ -93,3 +97,16 @@ class CcxtExchangeProvider(ExchangeProvider):
         if self._markets is None:
             self._markets = await self.client.load_markets()
         return self._markets
+
+
+
+def _row_to_candle(row: list[float]) -> Candle:
+    timestamp_ms, open_, high, low, close, volume = row
+    return Candle(
+        timestamp=datetime.fromtimestamp(timestamp_ms / 1000, tz=timezone.utc),
+        open=float(open_),
+        high=float(high),
+        low=float(low),
+        close=float(close),
+        volume=float(volume or 0),
+    )

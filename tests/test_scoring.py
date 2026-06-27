@@ -45,3 +45,13 @@ def test_clean_long_usdt_chart_scores_higher_than_broken_usd_chart() -> None:
 
     assert clean.score > broken.score
     assert "ликвидная пара к USDT" in clean.reasons
+
+
+def test_history_start_can_extend_beyond_quality_window() -> None:
+    candles = make_candles(24)
+    history_start = candles[0].timestamp - timedelta(days=365)
+
+    metrics = calculate_metrics(candles, history_start_at=history_start)
+
+    assert metrics.history_days > 365
+    assert metrics.gap_count == 0
