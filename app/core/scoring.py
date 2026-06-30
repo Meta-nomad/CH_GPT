@@ -13,10 +13,11 @@ def calculate_metrics(candles: list[Candle], *, history_start_at: datetime | Non
         return ChartMetrics(0, history_start_at, None, 0, 0, 0, 0, 0, 0, 0)
 
     ordered = sorted(candles, key=lambda candle: candle.timestamp)
-    first = history_start_at or ordered[0].timestamp
+    history_first = history_start_at or ordered[0].timestamp
+    quality_first = ordered[0].timestamp
     last = ordered[-1].timestamp
-    history_days = max((last - first).total_seconds() / 86_400, 0)
-    expected = int((last - first).total_seconds() // SECONDS_PER_HOUR) + 1
+    history_days = max((last - history_first).total_seconds() / 86_400, 0)
+    expected = int((last - quality_first).total_seconds() // SECONDS_PER_HOUR) + 1
 
     gap_count = 0
     for previous, current in zip(ordered, ordered[1:], strict=False):
@@ -45,7 +46,7 @@ def calculate_metrics(candles: list[Candle], *, history_start_at: datetime | Non
 
     return ChartMetrics(
         history_days=history_days,
-        first_candle_at=first,
+        first_candle_at=history_first,
         last_candle_at=last,
         expected_candles=expected,
         actual_candles=actual,

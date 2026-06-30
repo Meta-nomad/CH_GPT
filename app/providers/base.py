@@ -22,7 +22,7 @@ class ExchangeProvider(ABC):
     async def fetch_hourly_candles(self, market: MarketSymbol, *, limit: int) -> list[Candle]:
         raise NotImplementedError
 
-    async def find_earliest_hourly_candle(self, market: MarketSymbol) -> Candle | None:
+    async def find_earliest_history_candle(self, market: MarketSymbol) -> Candle | None:
         return None
 
     async def has_futures_market(self, base: str) -> bool | None:

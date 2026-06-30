@@ -100,7 +100,7 @@ class HistoryPriorityProvider(ExchangeProvider):
             )
         return candles
 
-    async def find_earliest_hourly_candle(self, market: MarketSymbol) -> Candle | None:
+    async def find_earliest_history_candle(self, market: MarketSymbol) -> Candle | None:
         if market.tradingview_exchange == "GATEIO":
             timestamp = datetime(2026, 3, 1, tzinfo=timezone.utc)
         else:
@@ -115,3 +115,12 @@ async def test_analyzer_prefers_longer_history_before_score() -> None:
 
     assert result.best is not None
     assert result.best.symbol.tradingview_exchange == "GATEIO"
+
+
+async def test_cache_key_uses_current_history_version() -> None:
+    cache = MemoryCache()
+    analyzer = ChartAnalyzer([FakeProvider()], cache, max_candles=10)
+
+    await analyzer.analyze("BTC")
+
+    assert cache.value is not None

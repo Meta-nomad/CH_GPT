@@ -9,7 +9,7 @@ from app.providers.base import ExchangeProvider, ProviderError
 from app.storage.cache import AnalysisCache
 
 logger = logging.getLogger(__name__)
-CACHE_VERSION = "history-primary-v3"
+CACHE_VERSION = "history-ohlcv-batch-v5"
 
 
 class ChartAnalyzer:
@@ -81,7 +81,7 @@ class ChartAnalyzer:
             raise ProviderError(f"No provider for {market.exchange_id}")
 
         candles = await provider.fetch_hourly_candles(market, limit=self.max_candles)
-        earliest = await provider.find_earliest_hourly_candle(market)
+        earliest = await provider.find_earliest_history_candle(market)
         metrics = calculate_metrics(
             candles,
             history_start_at=earliest.timestamp if earliest else None,
@@ -121,10 +121,9 @@ def normalize_asset(value: str) -> str:
     return "".join(ch for ch in cleaned if ch.isalnum())
 
 
-
 def _rank_key(item: ChartScore) -> tuple[int, float, int, float]:
     metrics = item.metrics
-    expected = max(metrics.expected_candles, 1)
+    expected = max(metrics.actual_candles + metrics.gap_count, 1)
     gap_ratio = metrics.gap_count / expected
     is_usable = int(
         gap_ratio <= 0.05
