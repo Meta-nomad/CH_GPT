@@ -9,7 +9,7 @@ from app.providers.base import ExchangeProvider, ProviderError
 from app.storage.cache import AnalysisCache
 
 logger = logging.getLogger(__name__)
-CACHE_VERSION = "tv-clean-v9"
+CACHE_VERSION = "tv-clean-v10"
 
 QUALITY_GAP_LIMIT = 0.05
 QUALITY_FLAT_LIMIT = 0.05
@@ -117,8 +117,18 @@ class ChartAnalyzer:
 
     async def probe_mexc_futures(self, query: str) -> str:
         normalized = normalize_asset(query)
-        result = await self._check_mexc_futures(normalized)
         symbol = f"{normalized}_USDT"
+        checker = self.mexc_futures_checker
+        diagnostic = getattr(checker, "diagnostic", None) if checker is not None else None
+        if diagnostic is not None:
+            try:
+                data = await diagnostic(normalized)
+                status = "Да" if data.get("available") else "Нет"
+                details = ", ".join(f"{key}={value}" for key, value in data.items() if key != "available")
+                return f"MEXC Futures для {normalized}: {status}\n{details}"
+            except Exception as exc:
+                logger.warning("MEXC diagnostic failed for %s: %s", normalized, exc)
+        result = await self._check_mexc_futures(normalized)
         if result is True:
             status = "Да"
         elif result is False:

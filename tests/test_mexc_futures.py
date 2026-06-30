@@ -1,8 +1,10 @@
 from app.providers.mexc_futures import (
     _extract_data_object,
     _extract_depth_object,
+    _false_positive_symbols,
     _has_order_book,
     _is_exact_active_usdt_contract,
+    _looks_disabled_or_hidden,
 )
 
 
@@ -25,3 +27,16 @@ def test_mexc_depth_accepts_raw_or_wrapped_payload() -> None:
 
 def test_mexc_data_object_rejects_failed_response() -> None:
     assert _extract_data_object({"success": False, "data": {"symbol": "BTC_USDT"}}) is None
+
+
+def test_mexc_known_api_ui_false_positives_are_blocked() -> None:
+    symbols = _false_positive_symbols()
+
+    assert "MAGMA_USDT" in symbols
+    assert "MORPHO_USDT" in symbols
+
+
+def test_mexc_hidden_flags_are_rejected() -> None:
+    assert _looks_disabled_or_hidden({"visible": False}) is True
+    assert _looks_disabled_or_hidden({"hidden": True}) is True
+    assert _looks_disabled_or_hidden({"visible": True, "hidden": False}) is False

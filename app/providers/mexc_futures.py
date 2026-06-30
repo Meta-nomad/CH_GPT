@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from typing import Any
 from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
@@ -12,6 +13,7 @@ MEXC_CONTRACT_DEPTH_URL = "https://contract.mexc.com/api/v1/contract/depth"
 REQUEST_TIMEOUT_SECONDS = 8
 ACTIVE_STATES = {0, "0"}
 INACTIVE_STATE_TEXT = {"offline", "disabled", "delisted", "closed", "suspended"}
+DEFAULT_FALSE_POSITIVE_SYMBOLS = {"MAGMA_USDT", "MORPHO_USDT"}
 
 
 class MexcFuturesChecker:
@@ -25,12 +27,24 @@ class MexcFuturesChecker:
         if not normalized:
             return False
         symbol = f"{normalized}_USDT"
+        if symbol in _false_positive_symbols():
+            return False
         if symbol not in self._cache:
             self._cache[symbol] = await asyncio.wait_for(
                 asyncio.to_thread(_has_tradeable_contract_sync, symbol),
                 timeout=REQUEST_TIMEOUT_SECONDS * 3,
             )
         return self._cache[symbol]
+
+    async def diagnostic(self, base: str) -> dict[str, Any]:
+        normalized = _normalize_base(base)
+        symbol = f"{normalized}_USDT"
+        if symbol in _false_positive_symbols():
+            return {"symbol": symbol, "available": False, "reason": "manual_api_ui_mismatch"}
+        return await asyncio.wait_for(
+            asyncio.to_thread(_diagnose_contract_sync, symbol),
+            timeout=REQUEST_TIMEOUT_SECONDS * 3,
+        )
 
     async def close(self) -> None:
         return None
@@ -50,6 +64,36 @@ def _has_tradeable_contract_sync(symbol: str) -> bool:
     depth_payload = _request_json(f"{MEXC_CONTRACT_DEPTH_URL}/{quote(symbol)}")
     depth = _extract_depth_object(depth_payload)
     return depth is not None and _has_order_book(depth)
+
+
+def _diagnose_contract_sync(symbol: str) -> dict[str, Any]:
+    detail_payload = _request_json(f"{MEXC_CONTRACT_DETAIL_URL}?{urlencode({'symbol': symbol})}")
+    contract = _extract_data_object(detail_payload)
+    ticker_payload = _request_json(f"{MEXC_CONTRACT_TICKER_URL}?{urlencode({'symbol': symbol})}")
+    ticker = _extract_data_object(ticker_payload)
+    depth_payload = _request_json(f"{MEXC_CONTRACT_DEPTH_URL}/{quote(symbol)}")
+    depth = _extract_depth_object(depth_payload)
+    available = (
+        contract is not None
+        and _is_exact_active_usdt_contract(contract, symbol)
+        and ticker is not None
+        and _is_exact_symbol(ticker, symbol)
+        and _has_real_price(ticker)
+        and depth is not None
+        and _has_order_book(depth)
+    )
+    return {
+        "symbol": symbol,
+        "available": available,
+        "detail_success": _response_success(detail_payload),
+        "detail_state": None if contract is None else contract.get("state"),
+        "detail_hidden": None if contract is None else _looks_disabled_or_hidden(contract),
+        "ticker_success": _response_success(ticker_payload),
+        "ticker_symbol": None if ticker is None else ticker.get("symbol"),
+        "has_price": False if ticker is None else _has_real_price(ticker),
+        "depth_success": _response_success(depth_payload),
+        "has_book": False if depth is None else _has_order_book(depth),
+    }
 
 
 def _request_json(url: str) -> dict[str, Any]:
@@ -107,7 +151,7 @@ def _is_exact_active_usdt_contract(contract: dict[str, Any], expected_symbol: st
         return False
     if settle_coin not in {"", "USDT"}:
         return False
-    if contract.get("enable") is False or contract.get("enabled") is False or contract.get("active") is False:
+    if _looks_disabled_or_hidden(contract):
         return False
     state = contract.get("state")
     if state in ACTIVE_STATES or state is None:
@@ -115,6 +159,44 @@ def _is_exact_active_usdt_contract(contract: dict[str, Any], expected_symbol: st
     if isinstance(state, str) and state.strip().lower() in INACTIVE_STATE_TEXT:
         return False
     return False
+
+
+def _looks_disabled_or_hidden(data: dict[str, Any]) -> bool:
+    false_flags = (
+        "enable",
+        "enabled",
+        "active",
+        "isOpen",
+        "is_open",
+        "open",
+        "visible",
+        "show",
+        "display",
+        "apiAllowed",
+        "api_allowed",
+    )
+    true_flags = ("hidden", "isHidden", "is_hidden", "offline", "delisted")
+    for key in false_flags:
+        if data.get(key) is False:
+            return True
+    for key in true_flags:
+        if data.get(key) is True:
+            return True
+    return False
+
+
+def _false_positive_symbols() -> set[str]:
+    raw = os.getenv("MEXC_FUTURES_FALSE_POSITIVES", "")
+    configured = {_normalize_symbol(item) for item in raw.split(",") if item.strip()}
+    return DEFAULT_FALSE_POSITIVE_SYMBOLS | configured
+
+
+def _normalize_symbol(value: Any) -> str:
+    cleaned = str(value).upper().strip().replace("-", "_").replace("/", "_")
+    cleaned = "".join(ch for ch in cleaned if ch.isalnum() or ch == "_")
+    if "_" not in cleaned and cleaned.endswith("USDT"):
+        cleaned = f"{cleaned[:-4]}_USDT"
+    return cleaned
 
 
 def _is_exact_symbol(data: dict[str, Any], expected_symbol: str) -> bool:
