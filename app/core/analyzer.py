@@ -10,7 +10,7 @@ from app.providers.base import ExchangeProvider, ProviderError
 from app.storage.cache import AnalysisCache
 
 logger = logging.getLogger(__name__)
-CACHE_VERSION = "tv-timeouts-v14"
+CACHE_VERSION = "tv-fast-timeouts-v16"
 FALLBACK_PENALTY = "TradingView не отдал свечи, использован запасной источник биржи"
 
 
@@ -58,15 +58,28 @@ class ChartAnalyzer:
         normalized = normalize_asset(query)
         if self.tradingview_client is None:
             return "TradingView-клиент не подключен."
-        markets = await self._find_markets(normalized)
+        try:
+            markets = await asyncio.wait_for(self._find_markets(normalized), timeout=8)
+        except TimeoutError:
+            return f"Поиск рынков для {normalized} занял слишком много времени. Попробуй еще раз."
         if not markets:
             return f"Не нашел рынки для {normalized}."
+
+        checked_markets = markets[:3]
         lines = [f"TradingView test для {normalized}:", ""]
-        for market in markets[:5]:
-            try:
-                probe = await self.tradingview_client.probe(market, interval="1D", limit=5)
-            except Exception as exc:
-                lines.append(f"{market.tradingview_symbol}: ошибка {exc}")
+        probes = await asyncio.gather(
+            *[
+                asyncio.wait_for(
+                    self.tradingview_client.probe(market, interval="1D", limit=3),
+                    timeout=10,
+                )
+                for market in checked_markets
+            ],
+            return_exceptions=True,
+        )
+        for market, probe in zip(checked_markets, probes, strict=True):
+            if isinstance(probe, Exception):
+                lines.append(f"{market.tradingview_symbol}: таймаут/ошибка {probe}")
                 continue
             if probe.ok:
                 first = probe.first_candle_at.date().isoformat() if probe.first_candle_at else "?"
@@ -75,8 +88,8 @@ class ChartAnalyzer:
                 )
             else:
                 lines.append(f"{probe.symbol}: нет ({probe.error})")
-        if len(markets) > 5:
-            lines.append(f"\nПоказаны первые 5 из {len(markets)} рынков.")
+        if len(markets) > len(checked_markets):
+            lines.append(f"\nПоказаны первые {len(checked_markets)} из {len(markets)} рынков.")
         return "\n".join(lines)
 
     async def _find_markets(self, asset: str) -> list[MarketSymbol]:

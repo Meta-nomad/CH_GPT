@@ -16,10 +16,11 @@ from app.providers.base import ProviderError
 
 TRADINGVIEW_WS_URL = "wss://data.tradingview.com/socket.io/websocket"
 AUTH_TOKEN = "unauthorized_user_token"
-CONNECT_TIMEOUT_SECONDS = 4
-READ_TIMEOUT_SECONDS = 4
-PROBE_TIMEOUT_SECONDS = 12
-MAX_READ_MESSAGES = 40
+CONNECT_TIMEOUT_SECONDS = 3
+READ_TIMEOUT_SECONDS = 2
+STRATEGY_TIMEOUT_SECONDS = 5
+PROBE_TIMEOUT_SECONDS = 8
+MAX_READ_MESSAGES = 8
 
 
 @dataclass(frozen=True)
@@ -95,10 +96,13 @@ class TradingViewClient:
         last_error: Exception | None = None
         for strategy_name, resolved_symbol in _resolve_symbol_payloads(market.tradingview_symbol):
             try:
-                candles = await self._fetch_candles_once(
-                    resolved_symbol=resolved_symbol,
-                    interval=interval,
-                    limit=limit,
+                candles = await asyncio.wait_for(
+                    self._fetch_candles_once(
+                        resolved_symbol=resolved_symbol,
+                        interval=interval,
+                        limit=limit,
+                    ),
+                    timeout=STRATEGY_TIMEOUT_SECONDS,
                 )
             except Exception as exc:
                 last_error = exc
@@ -132,7 +136,7 @@ class TradingViewClient:
                 close_timeout=2,
                 open_timeout=CONNECT_TIMEOUT_SECONDS,
             ),
-            timeout=CONNECT_TIMEOUT_SECONDS + 1,
+            timeout=CONNECT_TIMEOUT_SECONDS,
         )
         try:
             await _send(websocket, "set_auth_token", [AUTH_TOKEN])

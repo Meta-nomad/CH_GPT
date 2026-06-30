@@ -71,3 +71,6 @@ python tools/tv_probe.py BITGET:KAIAUSDT MEXC:KAIAUSDT OKX:KAIAUSDT --interval 1
 ```
 
 Если TradingView доступен, будет показано `OK`, количество свечей, первая свеча и метод resolve_symbol. Если нет - будет быстрый `FAIL`, а не зависание на минуты.
+
+
+`/tvtest` проверяет первые 3 найденных рынка параллельно, чтобы команда не зависала на длинном списке бирж.

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from aiogram import Bot, Dispatcher, F, Router
@@ -44,7 +45,10 @@ def build_router(analyzer: ChartAnalyzer) -> Router:
             await message.answer("Напиши так: /tvtest BTC")
             return
         status = await message.answer("Проверяю доступ TradingView...")
-        result = await analyzer.probe_tradingview(query)
+        try:
+            result = await asyncio.wait_for(analyzer.probe_tradingview(query), timeout=15)
+        except TimeoutError:
+            result = "TradingView не ответил за 15 секунд. Это уже не зависание бота, а недоступность источника/биржевого поиска."
         await status.edit_text(result)
 
     @router.message(Command("compare"))
