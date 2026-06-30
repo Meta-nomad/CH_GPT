@@ -3,14 +3,13 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from app.core.history_overrides import get_tradingview_history_start
 from app.core.models import AnalysisResult, ChartScore, MarketSymbol, Quote, utc_now
 from app.core.scoring import calculate_metrics, infer_birth_year_from_metrics, score_chart
 from app.providers.base import ExchangeProvider, ProviderError
 from app.storage.cache import AnalysisCache
 
 logger = logging.getLogger(__name__)
-CACHE_VERSION = "tv-history-overrides-v7"
+CACHE_VERSION = "tradingview-source-v8"
 
 
 class ChartAnalyzer:
@@ -20,14 +19,17 @@ class ChartAnalyzer:
         cache: AnalysisCache,
         *,
         mexc_futures_checker: object | None = None,
+        tradingview_client: object | None = None,
         max_candles: int = 1000,
         quote_policy_year: int = 2015,
     ) -> None:
         self.providers = providers
         self.cache = cache
         self.mexc_futures_checker = mexc_futures_checker
+        self.tradingview_client = tradingview_client
         self.max_candles = max_candles
         self.quote_policy_year = quote_policy_year
+        self._score_semaphore = asyncio.Semaphore(4)
 
     async def analyze(self, query: str, *, force_refresh: bool = False) -> AnalysisResult:
         normalized = normalize_asset(query)
@@ -64,7 +66,7 @@ class ChartAnalyzer:
         return markets
 
     async def _score_markets(self, markets: list[MarketSymbol]) -> list[ChartScore]:
-        tasks = [self._score_market(market) for market in markets]
+        tasks = [self._score_market_limited(market) for market in markets]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
         scored: list[ChartScore] = []
@@ -76,18 +78,23 @@ class ChartAnalyzer:
 
         return scored
 
+    async def _score_market_limited(self, market: MarketSymbol) -> ChartScore:
+        async with self._score_semaphore:
+            return await self._score_market(market)
+
     async def _score_market(self, market: MarketSymbol) -> ChartScore:
         provider = self._provider_for(market.exchange_id)
         if provider is None:
             raise ProviderError(f"No provider for {market.exchange_id}")
 
-        candles = await provider.fetch_hourly_candles(market, limit=self.max_candles)
-        earliest = await provider.find_earliest_history_candle(market)
-        override_start = get_tradingview_history_start(market)
-        history_start_at = override_start or (earliest.timestamp if earliest else None)
+        candle_source = self.tradingview_client or provider
+        candles = await candle_source.fetch_hourly_candles(market, limit=self.max_candles)
+        if not candles:
+            raise ProviderError(f"No candles for {market.tradingview_symbol}")
+        earliest = await candle_source.find_earliest_history_candle(market)
         metrics = calculate_metrics(
             candles,
-            history_start_at=history_start_at,
+            history_start_at=earliest.timestamp if earliest else None,
         )
         birth_year = infer_birth_year_from_metrics(metrics.first_candle_at)
         return score_chart(

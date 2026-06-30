@@ -126,7 +126,7 @@ async def test_cache_key_uses_current_history_version() -> None:
     assert cache.value is not None
 
 
-class KaiaOverrideProvider(ExchangeProvider):
+class KaiaExchangeProvider(ExchangeProvider):
     exchange_id = "kaia"
     exchange_name = "Kaia"
     tradingview_exchange = "KAIA"
@@ -137,6 +137,14 @@ class KaiaOverrideProvider(ExchangeProvider):
             MarketSymbol("kaia", "Kaia", base, Quote.USDT, f"{base}/USDT", "BITGET"),
         ]
 
+    async def fetch_hourly_candles(self, market: MarketSymbol, *, limit: int) -> list[Candle]:
+        raise AssertionError("Exchange candles must not be used when TradingView source is configured")
+
+    async def find_earliest_history_candle(self, market: MarketSymbol) -> Candle | None:
+        raise AssertionError("Exchange history must not be used when TradingView source is configured")
+
+
+class FakeTradingViewSource:
     async def fetch_hourly_candles(self, market: MarketSymbol, *, limit: int) -> list[Candle]:
         start = datetime(2026, 1, 1, tzinfo=timezone.utc)
         return [
@@ -152,11 +160,20 @@ class KaiaOverrideProvider(ExchangeProvider):
         ]
 
     async def find_earliest_history_candle(self, market: MarketSymbol) -> Candle | None:
-        return Candle(datetime(2019, 9, 1, tzinfo=timezone.utc), 1, 2, 0.5, 1.5, 10_000)
+        if market.tradingview_exchange == "BITGET":
+            timestamp = datetime(2025, 2, 1, tzinfo=timezone.utc)
+        else:
+            timestamp = datetime(2025, 7, 1, tzinfo=timezone.utc)
+        return Candle(timestamp, 1, 2, 0.5, 1.5, 10_000)
 
 
-async def test_tradingview_override_wins_over_exchange_ohlcv_history() -> None:
-    analyzer = ChartAnalyzer([KaiaOverrideProvider()], MemoryCache(), max_candles=24)
+async def test_analyzer_uses_tradingview_source_for_history_and_quality() -> None:
+    analyzer = ChartAnalyzer(
+        [KaiaExchangeProvider()],
+        MemoryCache(),
+        max_candles=24,
+        tradingview_client=FakeTradingViewSource(),
+    )
 
     result = await analyzer.analyze("KAIA")
 

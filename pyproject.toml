@@ -7,6 +7,7 @@ dependencies = [
     "aiogram>=3.8,<4",
     "ccxt>=4.3,<5",
     "pydantic-settings>=2.3,<3",
+    "websockets>=12,<16",
 ]
 
 [project.optional-dependencies]
