@@ -10,7 +10,7 @@ from app.providers.base import ExchangeProvider, ProviderError
 from app.storage.cache import AnalysisCache
 
 logger = logging.getLogger(__name__)
-CACHE_VERSION = "tv-alt-strategies-v13"
+CACHE_VERSION = "tv-timeouts-v14"
 FALLBACK_PENALTY = "TradingView не отдал свечи, использован запасной источник биржи"
 
 
@@ -62,7 +62,7 @@ class ChartAnalyzer:
         if not markets:
             return f"Не нашел рынки для {normalized}."
         lines = [f"TradingView test для {normalized}:", ""]
-        for market in markets[:10]:
+        for market in markets[:5]:
             try:
                 probe = await self.tradingview_client.probe(market, interval="1D", limit=5)
             except Exception as exc:
@@ -75,6 +75,8 @@ class ChartAnalyzer:
                 )
             else:
                 lines.append(f"{probe.symbol}: нет ({probe.error})")
+        if len(markets) > 5:
+            lines.append(f"\nПоказаны первые 5 из {len(markets)} рынков.")
         return "\n".join(lines)
 
     async def _find_markets(self, asset: str) -> list[MarketSymbol]:

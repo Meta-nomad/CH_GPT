@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import random
 import re
@@ -15,6 +16,10 @@ from app.providers.base import ProviderError
 
 TRADINGVIEW_WS_URL = "wss://data.tradingview.com/socket.io/websocket"
 AUTH_TOKEN = "unauthorized_user_token"
+CONNECT_TIMEOUT_SECONDS = 4
+READ_TIMEOUT_SECONDS = 4
+PROBE_TIMEOUT_SECONDS = 12
+MAX_READ_MESSAGES = 40
 
 
 @dataclass(frozen=True)
@@ -44,10 +49,13 @@ class TradingViewClient:
 
     async def probe(self, market: MarketSymbol, *, interval: str = "1D", limit: int = 5) -> TradingViewProbe:
         try:
-            candles, strategy = await self._fetch_candles_with_strategy(
-                market,
-                interval=interval,
-                limit=limit,
+            candles, strategy = await asyncio.wait_for(
+                self._fetch_candles_with_strategy(
+                    market,
+                    interval=interval,
+                    limit=limit,
+                ),
+                timeout=PROBE_TIMEOUT_SECONDS,
             )
         except Exception as exc:
             return TradingViewProbe(
@@ -111,12 +119,22 @@ class TradingViewClient:
         limit: int,
     ) -> list[Candle]:
         chart_session = _session_id("cs")
-        async with websockets.connect(
-            TRADINGVIEW_WS_URL,
-            origin="https://www.tradingview.com",
-            ping_interval=None,
-            close_timeout=5,
-        ) as websocket:
+        websocket = await asyncio.wait_for(
+            websockets.connect(
+                TRADINGVIEW_WS_URL,
+                origin="https://www.tradingview.com",
+                user_agent_header=(
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/126.0.0.0 Safari/537.36"
+                ),
+                ping_interval=None,
+                close_timeout=2,
+                open_timeout=CONNECT_TIMEOUT_SECONDS,
+            ),
+            timeout=CONNECT_TIMEOUT_SECONDS + 1,
+        )
+        try:
             await _send(websocket, "set_auth_token", [AUTH_TOKEN])
             await _send(websocket, "chart_create_session", [chart_session, ""])
             await _send(websocket, "resolve_symbol", [chart_session, "symbol_1", resolved_symbol])
@@ -126,6 +144,8 @@ class TradingViewClient:
                 [chart_session, "s1", "s1", "symbol_1", interval, limit],
             )
             return await _read_series(websocket, chart_session)
+        finally:
+            await websocket.close()
 
     async def close(self) -> None:
         return None
@@ -138,8 +158,8 @@ async def _send(websocket: Any, method: str, params: list[Any]) -> None:
 
 async def _read_series(websocket: Any, chart_session: str) -> list[Candle]:
     latest: list[Candle] = []
-    for _ in range(200):
-        raw = await websocket.recv()
+    for _ in range(MAX_READ_MESSAGES):
+        raw = await asyncio.wait_for(websocket.recv(), timeout=READ_TIMEOUT_SECONDS)
         if raw.startswith("~h~"):
             await websocket.send(raw)
             continue
