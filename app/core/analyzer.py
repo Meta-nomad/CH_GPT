@@ -9,7 +9,7 @@ from app.providers.base import ExchangeProvider, ProviderError
 from app.storage.cache import AnalysisCache
 
 logger = logging.getLogger(__name__)
-CACHE_VERSION = "history-ohlcv-batch-v5"
+CACHE_VERSION = "history-ohlcv-only-v6"
 
 
 class ChartAnalyzer:

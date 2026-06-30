@@ -76,10 +76,6 @@ class CcxtExchangeProvider(ExchangeProvider):
 
     async def find_earliest_history_candle(self, market: MarketSymbol) -> Candle | None:
         candidates: list[Candle] = []
-        metadata_candle = await self._market_listing_candle(market)
-        if metadata_candle is not None:
-            candidates.append(metadata_candle)
-
         since = int(datetime(2010, 1, 1, tzinfo=timezone.utc).timestamp() * 1000)
         supported = set((self.client.timeframes or {}).keys())
         preferred_timeframes = ["1M", "1w", "1d"]
@@ -118,21 +114,6 @@ class CcxtExchangeProvider(ExchangeProvider):
             return None
         return min((_row_to_candle(row) for row in rows), key=lambda candle: candle.timestamp)
 
-    async def _market_listing_candle(self, market: MarketSymbol) -> Candle | None:
-        markets = await self._load_markets()
-        market_data = markets.get(market.market_symbol, {})
-        timestamp = _extract_listing_timestamp(market_data)
-        if timestamp is None:
-            return None
-        return Candle(
-            timestamp=datetime.fromtimestamp(timestamp / 1000, tz=timezone.utc),
-            open=0,
-            high=0,
-            low=0,
-            close=0,
-            volume=0,
-        )
-
     async def close(self) -> None:
         await self.client.close()
 
@@ -153,40 +134,3 @@ def _row_to_candle(row: list[float]) -> Candle:
         volume=float(volume or 0),
     )
 
-
-def _extract_listing_timestamp(market_data: dict[str, Any]) -> int | None:
-    keys = (
-        "created",
-        "createdAt",
-        "listedAt",
-        "listingTime",
-        "launchTime",
-        "onlineTime",
-        "onlineAt",
-        "openTime",
-    )
-    values: list[Any] = []
-    for key in keys:
-        values.append(market_data.get(key))
-    info = market_data.get("info") or {}
-    if isinstance(info, dict):
-        for key in keys:
-            values.append(info.get(key))
-
-    timestamps = [_normalize_timestamp(value) for value in values]
-    timestamps = [value for value in timestamps if value is not None]
-    return min(timestamps) if timestamps else None
-
-
-def _normalize_timestamp(value: Any) -> int | None:
-    if value in (None, ""):
-        return None
-    try:
-        numeric = float(value)
-    except (TypeError, ValueError):
-        return None
-    if numeric <= 0:
-        return None
-    if numeric < 10_000_000_000:
-        numeric *= 1000
-    return int(numeric)
