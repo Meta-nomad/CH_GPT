@@ -180,3 +180,25 @@ async def test_analyzer_uses_tradingview_source_for_history_and_quality() -> Non
     assert result.best is not None
     assert result.best.symbol.tradingview_exchange == "BITGET"
     assert result.best.metrics.first_candle_at == datetime(2025, 2, 1, tzinfo=timezone.utc)
+
+
+class EmptyTradingViewSource:
+    async def fetch_hourly_candles(self, market: MarketSymbol, *, limit: int) -> list[Candle]:
+        return []
+
+    async def find_earliest_history_candle(self, market: MarketSymbol) -> Candle | None:
+        return None
+
+
+async def test_analyzer_falls_back_when_tradingview_returns_no_candles() -> None:
+    analyzer = ChartAnalyzer(
+        [FakeProvider()],
+        MemoryCache(),
+        max_candles=24,
+        tradingview_client=EmptyTradingViewSource(),
+    )
+
+    result = await analyzer.analyze("SOL")
+
+    assert result.best is not None
+    assert any("запасной источник" in penalty for penalty in result.best.penalties)

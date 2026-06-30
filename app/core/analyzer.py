@@ -2,14 +2,15 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import replace
 
-from app.core.models import AnalysisResult, ChartScore, MarketSymbol, Quote, utc_now
+from app.core.models import AnalysisResult, Candle, ChartScore, MarketSymbol, Quote, utc_now
 from app.core.scoring import calculate_metrics, infer_birth_year_from_metrics, score_chart
 from app.providers.base import ExchangeProvider, ProviderError
 from app.storage.cache import AnalysisCache
 
 logger = logging.getLogger(__name__)
-CACHE_VERSION = "tradingview-source-v8"
+CACHE_VERSION = "tradingview-fallback-v9"
 
 
 class ChartAnalyzer:
@@ -87,22 +88,52 @@ class ChartAnalyzer:
         if provider is None:
             raise ProviderError(f"No provider for {market.exchange_id}")
 
-        candle_source = self.tradingview_client or provider
-        candles = await candle_source.fetch_hourly_candles(market, limit=self.max_candles)
-        if not candles:
-            raise ProviderError(f"No candles for {market.tradingview_symbol}")
-        earliest = await candle_source.find_earliest_history_candle(market)
+        candles, earliest, source_name = await self._fetch_chart_data(market, provider)
         metrics = calculate_metrics(
             candles,
             history_start_at=earliest.timestamp if earliest else None,
         )
         birth_year = infer_birth_year_from_metrics(metrics.first_candle_at)
-        return score_chart(
+        scored = score_chart(
             market,
             metrics,
             query_birth_year=birth_year,
             quote_policy_year=self.quote_policy_year,
         )
+        if source_name != "TradingView":
+            return replace(
+                scored,
+                score=round(max(scored.score - 20, 0), 2),
+                penalties=[
+                    *scored.penalties,
+                    "TradingView не отдал свечи, использован запасной источник биржи",
+                ],
+            )
+        return scored
+
+    async def _fetch_chart_data(
+        self,
+        market: MarketSymbol,
+        provider: ExchangeProvider,
+    ) -> tuple[list[Candle], Candle | None, str]:
+        if self.tradingview_client is not None:
+            try:
+                candles = await self.tradingview_client.fetch_hourly_candles(
+                    market,
+                    limit=self.max_candles,
+                )
+                if candles:
+                    earliest = await self.tradingview_client.find_earliest_history_candle(market)
+                    return candles, earliest, "TradingView"
+                logger.warning("TradingView returned no candles for %s", market.tradingview_symbol)
+            except Exception as exc:
+                logger.warning("TradingView failed for %s: %s", market.tradingview_symbol, exc)
+
+        candles = await provider.fetch_hourly_candles(market, limit=self.max_candles)
+        if not candles:
+            raise ProviderError(f"No candles for {market.tradingview_symbol}")
+        earliest = await provider.find_earliest_history_candle(market)
+        return candles, earliest, "exchange"
 
     async def _check_mexc_futures(self, asset: str) -> bool | None:
         if self.mexc_futures_checker is None:
