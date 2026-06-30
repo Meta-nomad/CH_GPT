@@ -9,8 +9,16 @@ from app.providers.base import ExchangeProvider, ProviderError
 from app.storage.cache import AnalysisCache
 
 logger = logging.getLogger(__name__)
-CACHE_VERSION = "tv-mexc-futures-v5"
-FALLBACK_PENALTY = "TradingView не отдал свечи; история не подтверждена"
+CACHE_VERSION = "tv-clean-v9"
+
+QUALITY_GAP_LIMIT = 0.05
+QUALITY_FLAT_LIMIT = 0.05
+QUALITY_ZERO_VOLUME_LIMIT = 0.10
+QUALITY_SPIKE_LIMIT = 10
+SCORE_TIMEOUT_SECONDS = 35
+MARKET_SEARCH_TIMEOUT_SECONDS = 12
+TV_PROBE_TIMEOUT_SECONDS = 12
+MEXC_USDT_POLICY_YEAR = 2015
 
 
 class ChartAnalyzer:
@@ -22,7 +30,7 @@ class ChartAnalyzer:
         mexc_futures_checker: object | None = None,
         tradingview_client: object | None = None,
         max_candles: int = 1000,
-        quote_policy_year: int = 2015,
+        quote_policy_year: int = MEXC_USDT_POLICY_YEAR,
     ) -> None:
         self.providers = providers
         self.cache = cache
@@ -42,7 +50,7 @@ class ChartAnalyzer:
 
         markets = await self._find_markets(normalized)
         scored = await self._score_markets(markets)
-        ranked = sorted(scored, key=_rank_key, reverse=True)
+        ranked = self._rank_scores(scored)
         mexc_futures_available = await self._check_mexc_futures(normalized)
         result = AnalysisResult(
             query=normalized,
@@ -53,23 +61,36 @@ class ChartAnalyzer:
         self.cache.set(cache_key, result)
         return result
 
+    def _rank_scores(self, scored: list[ChartScore]) -> list[ChartScore]:
+        first_dates = [item.metrics.first_candle_at for item in scored if item.metrics.first_candle_at]
+        asset_birth_year = min(first_dates).year if first_dates else None
+        prefer_usdt = asset_birth_year is None or asset_birth_year >= self.quote_policy_year
+        return sorted(
+            scored,
+            key=lambda item: _rank_key(item, prefer_usdt=prefer_usdt),
+            reverse=True,
+        )
+
     async def probe_tradingview(self, query: str) -> str:
         normalized = normalize_asset(query)
         if self.tradingview_client is None:
             return "TradingView-клиент не подключен."
         try:
-            markets = await asyncio.wait_for(self._find_markets(normalized), timeout=12)
+            markets = await asyncio.wait_for(
+                self._find_markets(normalized),
+                timeout=MARKET_SEARCH_TIMEOUT_SECONDS,
+            )
         except TimeoutError:
             return f"Поиск TradingView для {normalized} занял слишком много времени."
         if not markets:
             return f"TradingView не нашел рынки USD/USDT для {normalized}."
 
-        checked_markets = sorted(markets, key=_tvtest_market_key)
+        checked_markets = sorted(markets, key=_market_display_key)
         probes = await asyncio.gather(
             *[
                 asyncio.wait_for(
                     self.tradingview_client.probe(market, interval="1D", limit=3),
-                    timeout=12,
+                    timeout=TV_PROBE_TIMEOUT_SECONDS,
                 )
                 for market in checked_markets
             ],
@@ -94,6 +115,18 @@ class ChartAnalyzer:
         lines.append(f"Проверено рынков: {len(checked_markets)}. Рабочих через TradingView: {ok_count}.")
         return "\n".join(lines)
 
+    async def probe_mexc_futures(self, query: str) -> str:
+        normalized = normalize_asset(query)
+        result = await self._check_mexc_futures(normalized)
+        symbol = f"{normalized}_USDT"
+        if result is True:
+            status = "Да"
+        elif result is False:
+            status = "Нет"
+        else:
+            status = "не удалось проверить"
+        return f"MEXC Futures для {normalized}: {status}\nПроверялся живой рынок: {symbol} ticker + стакан"
+
     async def _find_markets(self, asset: str) -> list[MarketSymbol]:
         tv_markets = await self._find_tradingview_markets(asset)
         if tv_markets:
@@ -107,7 +140,10 @@ class ChartAnalyzer:
         if search_markets is None:
             return []
         try:
-            return await asyncio.wait_for(search_markets(asset, quotes=[Quote.USDT, Quote.USD]), timeout=12)
+            return await asyncio.wait_for(
+                search_markets(asset, quotes=[Quote.USDT, Quote.USD]),
+                timeout=MARKET_SEARCH_TIMEOUT_SECONDS,
+            )
         except Exception as exc:
             logger.warning("TradingView symbol search failed for %s: %s", asset, exc)
             return []
@@ -122,14 +158,15 @@ class ChartAnalyzer:
                 logger.warning("Provider %s failed during market search: %s", provider.exchange_id, result)
                 continue
             markets.extend(result)
-        return sorted(markets, key=_tvtest_market_key)
+        return sorted(_dedupe_markets(markets), key=_market_display_key)
 
     async def _score_markets(self, markets: list[MarketSymbol]) -> list[ChartScore]:
-        tasks = [self._score_market_limited(market) for market in markets]
+        unique_markets = _dedupe_markets(markets)
+        tasks = [self._score_market_limited(market) for market in unique_markets]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
         scored: list[ChartScore] = []
-        for market, result in zip(markets, results, strict=True):
+        for market, result in zip(unique_markets, results, strict=True):
             if isinstance(result, Exception):
                 logger.warning("Failed to score %s: %s", market.tradingview_symbol, result)
                 continue
@@ -138,7 +175,7 @@ class ChartAnalyzer:
 
     async def _score_market_limited(self, market: MarketSymbol) -> ChartScore:
         async with self._score_semaphore:
-            return await asyncio.wait_for(self._score_market(market), timeout=35)
+            return await asyncio.wait_for(self._score_market(market), timeout=SCORE_TIMEOUT_SECONDS)
 
     async def _score_market(self, market: MarketSymbol) -> ChartScore:
         candles, earliest = await self._fetch_tradingview_chart_data(market)
@@ -166,18 +203,6 @@ class ChartAnalyzer:
         earliest = await self.tradingview_client.find_earliest_history_candle(market)
         return candles, earliest
 
-    async def probe_mexc_futures(self, query: str) -> str:
-        normalized = normalize_asset(query)
-        result = await self._check_mexc_futures(normalized)
-        symbol = f"{normalized}_USDT"
-        if result is True:
-            status = "Да"
-        elif result is False:
-            status = "Нет"
-        else:
-            status = "не удалось проверить"
-        return f"MEXC Futures для {normalized}: {status}\nПроверялся точный контракт: {symbol}"
-
     async def _check_mexc_futures(self, asset: str) -> bool | None:
         if self.mexc_futures_checker is None:
             return None
@@ -202,32 +227,58 @@ def normalize_asset(value: str) -> str:
     return "".join(ch for ch in cleaned if ch.isalnum())
 
 
-def _rank_key(item: ChartScore) -> tuple[int, float, int, float, float, float, float, float, int, int]:
+def _rank_key(
+    item: ChartScore,
+    *,
+    prefer_usdt: bool,
+) -> tuple[int, int, int, int, float, float, float, float, float, int, float]:
     metrics = item.metrics
     expected = max(metrics.actual_candles + metrics.gap_count, 1)
     gap_ratio = metrics.gap_count / expected
-    is_usable = int(
-        gap_ratio <= 0.05
-        and metrics.flat_candle_ratio <= 0.05
-        and metrics.zero_volume_ratio <= 0.10
-        and metrics.spike_count <= 10
-    )
-    quote_priority = 1 if item.symbol.quote is Quote.USDT else 0
+    is_usable = int(_is_usable_quality(item))
+    history_months = int(metrics.history_days // 30)
+    usdt_priority = 1 if item.symbol.quote is Quote.USDT else 0
+    quote_policy_priority = usdt_priority if prefer_usdt else 0
     return (
         is_usable,
-        metrics.history_days,
-        quote_priority,
+        quote_policy_priority,
+        history_months,
+        usdt_priority,
         item.score,
         metrics.average_volume,
         -gap_ratio,
         -metrics.flat_candle_ratio,
         -metrics.zero_volume_ratio,
         -metrics.spike_count,
-        _exchange_priority_score(item.symbol.tradingview_exchange),
+        metrics.history_days,
     )
 
 
-_TVTEST_EXCHANGE_PRIORITY = {
+def _is_usable_quality(item: ChartScore) -> bool:
+    metrics = item.metrics
+    expected = max(metrics.actual_candles + metrics.gap_count, 1)
+    gap_ratio = metrics.gap_count / expected
+    return (
+        gap_ratio <= QUALITY_GAP_LIMIT
+        and metrics.flat_candle_ratio <= QUALITY_FLAT_LIMIT
+        and metrics.zero_volume_ratio <= QUALITY_ZERO_VOLUME_LIMIT
+        and metrics.spike_count <= QUALITY_SPIKE_LIMIT
+    )
+
+
+def _dedupe_markets(markets: list[MarketSymbol]) -> list[MarketSymbol]:
+    seen: set[str] = set()
+    unique: list[MarketSymbol] = []
+    for market in markets:
+        key = market.tradingview_symbol
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(market)
+    return unique
+
+
+_EXCHANGE_DISPLAY_PRIORITY = {
     "BITGET": 0,
     "MEXC": 1,
     "GATEIO": 2,
@@ -241,14 +292,10 @@ _TVTEST_EXCHANGE_PRIORITY = {
 }
 
 
-def _tvtest_market_key(market: MarketSymbol) -> tuple[int, int, str]:
+def _market_display_key(market: MarketSymbol) -> tuple[int, int, str]:
     quote_priority = 0 if market.quote is Quote.USDT else 1
-    exchange_priority = _TVTEST_EXCHANGE_PRIORITY.get(market.tradingview_exchange, 99)
+    exchange_priority = _EXCHANGE_DISPLAY_PRIORITY.get(market.tradingview_exchange, 99)
     return (quote_priority, exchange_priority, market.tradingview_symbol)
-
-
-def _exchange_priority_score(exchange: str) -> int:
-    return 100 - _TVTEST_EXCHANGE_PRIORITY.get(exchange, 99)
 
 
 def _short_error(exc: Exception) -> str:

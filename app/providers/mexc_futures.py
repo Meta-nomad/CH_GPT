@@ -3,12 +3,14 @@ from __future__ import annotations
 import asyncio
 import json
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 
 MEXC_CONTRACT_DETAIL_URL = "https://contract.mexc.com/api/v1/contract/detail"
+MEXC_CONTRACT_TICKER_URL = "https://contract.mexc.com/api/v1/contract/ticker"
+MEXC_CONTRACT_DEPTH_URL = "https://contract.mexc.com/api/v1/contract/depth"
 REQUEST_TIMEOUT_SECONDS = 8
-ACTIVE_STATES = {0, 1}
+ACTIVE_STATES = {0, "0"}
 INACTIVE_STATE_TEXT = {"offline", "disabled", "delisted", "closed", "suspended"}
 
 
@@ -25,8 +27,8 @@ class MexcFuturesChecker:
         symbol = f"{normalized}_USDT"
         if symbol not in self._cache:
             self._cache[symbol] = await asyncio.wait_for(
-                asyncio.to_thread(_has_active_contract_sync, symbol),
-                timeout=REQUEST_TIMEOUT_SECONDS + 2,
+                asyncio.to_thread(_has_tradeable_contract_sync, symbol),
+                timeout=REQUEST_TIMEOUT_SECONDS * 3,
             )
         return self._cache[symbol]
 
@@ -34,18 +36,23 @@ class MexcFuturesChecker:
         return None
 
 
-def _has_active_contract_sync(symbol: str) -> bool:
-    payload = _request_contract_detail(symbol)
-    if not _response_success(payload):
+def _has_tradeable_contract_sync(symbol: str) -> bool:
+    detail_payload = _request_json(f"{MEXC_CONTRACT_DETAIL_URL}?{urlencode({'symbol': symbol})}")
+    contract = _extract_data_object(detail_payload)
+    if contract is None or not _is_exact_active_usdt_contract(contract, symbol):
         return False
-    contract = _extract_contract(payload)
-    if contract is None:
+
+    ticker_payload = _request_json(f"{MEXC_CONTRACT_TICKER_URL}?{urlencode({'symbol': symbol})}")
+    ticker = _extract_data_object(ticker_payload)
+    if ticker is None or not _is_exact_symbol(ticker, symbol) or not _has_real_price(ticker):
         return False
-    return _is_exact_active_usdt_contract(contract, symbol)
+
+    depth_payload = _request_json(f"{MEXC_CONTRACT_DEPTH_URL}/{quote(symbol)}")
+    depth = _extract_depth_object(depth_payload)
+    return depth is not None and _has_order_book(depth)
 
 
-def _request_contract_detail(symbol: str) -> dict[str, Any]:
-    url = f"{MEXC_CONTRACT_DETAIL_URL}?{urlencode({'symbol': symbol})}"
+def _request_json(url: str) -> dict[str, Any]:
     request = Request(
         url,
         headers={
@@ -61,17 +68,9 @@ def _request_contract_detail(symbol: str) -> dict[str, Any]:
     return payload if isinstance(payload, dict) else {}
 
 
-def _response_success(payload: dict[str, Any]) -> bool:
-    success = payload.get("success")
-    if success is False:
-        return False
-    code = payload.get("code")
-    if code not in (None, 0, 200, "0", "200"):
-        return False
-    return True
-
-
-def _extract_contract(payload: dict[str, Any]) -> dict[str, Any] | None:
+def _extract_data_object(payload: dict[str, Any]) -> dict[str, Any] | None:
+    if not _response_success(payload):
+        return None
     data = payload.get("data")
     if isinstance(data, dict):
         return data
@@ -80,32 +79,77 @@ def _extract_contract(payload: dict[str, Any]) -> dict[str, Any] | None:
     return None
 
 
+def _extract_depth_object(payload: dict[str, Any]) -> dict[str, Any] | None:
+    if not _response_success(payload):
+        return None
+    data = payload.get("data")
+    if isinstance(data, dict):
+        return data
+    if "bids" in payload or "asks" in payload:
+        return payload
+    return None
+
+
+def _response_success(payload: dict[str, Any]) -> bool:
+    success = payload.get("success")
+    if success is False:
+        return False
+    code = payload.get("code")
+    return code in (None, 0, 200, "0", "200")
+
+
 def _is_exact_active_usdt_contract(contract: dict[str, Any], expected_symbol: str) -> bool:
-    symbol = str(contract.get("symbol") or "").upper()
-    if symbol != expected_symbol:
+    if not _is_exact_symbol(contract, expected_symbol):
         return False
-
-    quote = str(contract.get("quoteCoin") or contract.get("quote") or "").upper()
-    settle = str(contract.get("settleCoin") or contract.get("settle") or "").upper()
-    if quote not in {"", "USDT"}:
+    quote_coin = str(contract.get("quoteCoin") or contract.get("quote") or "").upper()
+    settle_coin = str(contract.get("settleCoin") or contract.get("settle") or "").upper()
+    if quote_coin not in {"", "USDT"}:
         return False
-    if settle not in {"", "USDT"}:
+    if settle_coin not in {"", "USDT"}:
         return False
-
     if contract.get("enable") is False or contract.get("enabled") is False or contract.get("active") is False:
         return False
-
     state = contract.get("state")
-    if isinstance(state, str):
-        stripped = state.strip().lower()
-        if stripped in INACTIVE_STATE_TEXT:
-            return False
-        if stripped.isdigit() and int(stripped) not in ACTIVE_STATES:
-            return False
-    elif isinstance(state, int) and state not in ACTIVE_STATES:
+    if state in ACTIVE_STATES or state is None:
+        return True
+    if isinstance(state, str) and state.strip().lower() in INACTIVE_STATE_TEXT:
         return False
+    return False
 
-    return True
+
+def _is_exact_symbol(data: dict[str, Any], expected_symbol: str) -> bool:
+    return str(data.get("symbol") or "").upper() == expected_symbol
+
+
+def _has_real_price(ticker: dict[str, Any]) -> bool:
+    for key in ("lastPrice", "last", "fairPrice", "indexPrice", "bid1", "ask1"):
+        if _positive_number(ticker.get(key)):
+            return True
+    return False
+
+
+def _has_order_book(depth: dict[str, Any]) -> bool:
+    bids = depth.get("bids") or depth.get("bid") or []
+    asks = depth.get("asks") or depth.get("ask") or []
+    return _has_book_side(bids) and _has_book_side(asks)
+
+
+def _has_book_side(side: Any) -> bool:
+    if not isinstance(side, list) or not side:
+        return False
+    first = side[0]
+    if isinstance(first, list) and first:
+        return _positive_number(first[0])
+    if isinstance(first, dict):
+        return _positive_number(first.get("price") or first.get("p"))
+    return False
+
+
+def _positive_number(value: Any) -> bool:
+    try:
+        return float(value) > 0
+    except (TypeError, ValueError):
+        return False
 
 
 def _normalize_base(value: Any) -> str:

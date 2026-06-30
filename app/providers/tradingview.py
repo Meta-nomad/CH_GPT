@@ -308,7 +308,7 @@ def _symbols_to_markets(symbols: list[dict[str, Any]], *, base: str, quotes: lis
                 exchange_name=TV_EXCHANGE_NAMES[exchange],
                 base=wanted_base,
                 quote=quote,
-                market_symbol=f"{wanted_base}/{quote.value}",
+                market_symbol=symbol,
                 tradingview_exchange=exchange,
             )
         )

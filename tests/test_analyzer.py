@@ -8,11 +8,13 @@ from app.providers.base import ExchangeProvider
 class MemoryCache:
     def __init__(self) -> None:
         self.value = None
+        self.key = None
 
-    def get(self, query):
-        return self.value
+    def get(self, key):
+        return self.value if key == self.key else None
 
-    def set(self, query, result):
+    def set(self, key, result):
+        self.key = key
         self.value = result
 
 
@@ -21,192 +23,28 @@ class FakeMexcFuturesChecker:
         return base == "SUI"
 
 
-class FakeProvider(ExchangeProvider):
-    exchange_id = "fake"
-    exchange_name = "Fake"
-    tradingview_exchange = "FAKE"
+class StaticProvider(ExchangeProvider):
+    exchange_id = "static"
+    exchange_name = "Static"
+    tradingview_exchange = "STATIC"
+
+    def __init__(self, markets: list[MarketSymbol]) -> None:
+        self._markets = markets
 
     async def find_markets(self, base: str, quotes: list[Quote]) -> list[MarketSymbol]:
-        return [
-            MarketSymbol("fake", "Fake", base, Quote.USDT, f"{base}/USDT", "FAKE"),
-            MarketSymbol("fake", "Fake", base, Quote.USD, f"{base}/USD", "FAKE"),
-        ]
+        return self._markets
 
     async def fetch_hourly_candles(self, market: MarketSymbol, *, limit: int) -> list[Candle]:
-        start = datetime(2021, 1, 1, tzinfo=timezone.utc)
-        candles = []
-        count = limit if market.quote is Quote.USDT else limit // 2
-        for index in range(count):
-            price = 10 + index * 0.01
-            candles.append(
-                Candle(
-                    timestamp=start + timedelta(hours=index),
-                    open=price,
-                    high=price + 0.1,
-                    low=price - 0.1,
-                    close=price,
-                    volume=10_000,
-                )
-            )
-        return candles
-
-
-def test_normalize_asset() -> None:
-    assert normalize_asset("BINANCE:btcusdt") == "BTC"
-    assert normalize_asset(" eth ") == "ETH"
-
-
-async def test_analyzer_ranks_markets() -> None:
-    analyzer = ChartAnalyzer(
-        [FakeProvider()],
-        MemoryCache(),
-        max_candles=100,
-        mexc_futures_checker=FakeMexcFuturesChecker(),
-    )
-
-    result = await analyzer.analyze("SUI")
-
-    assert result.best is not None
-    assert result.best.symbol.tradingview_symbol == "FAKE:SUIUSDT"
-    assert len(result.ranked) == 2
-    assert result.mexc_futures_available is True
-
-
-class HistoryPriorityProvider(ExchangeProvider):
-    exchange_id = "history"
-    exchange_name = "History"
-    tradingview_exchange = "HISTORY"
-
-    async def find_markets(self, base: str, quotes: list[Quote]) -> list[MarketSymbol]:
-        return [
-            MarketSymbol("history", "History", base, Quote.USDT, f"{base}/USDT:SHORT", "KUCOIN"),
-            MarketSymbol("history", "History", base, Quote.USDT, f"{base}/USDT:LONG", "GATEIO"),
-        ]
-
-    async def fetch_hourly_candles(self, market: MarketSymbol, *, limit: int) -> list[Candle]:
-        start = datetime(2026, 5, 1, tzinfo=timezone.utc)
-        candles = []
-        for index in range(24):
-            price = 10 + index * 0.01
-            candles.append(
-                Candle(
-                    timestamp=start + timedelta(hours=index),
-                    open=price,
-                    high=price + 0.1,
-                    low=price - 0.1,
-                    close=price,
-                    volume=10_000,
-                )
-            )
-        return candles
-
-    async def find_earliest_history_candle(self, market: MarketSymbol) -> Candle | None:
-        if market.tradingview_exchange == "GATEIO":
-            timestamp = datetime(2026, 3, 1, tzinfo=timezone.utc)
-        else:
-            timestamp = datetime(2026, 5, 1, tzinfo=timezone.utc)
-        return Candle(timestamp, 10, 10.1, 9.9, 10, 10_000)
-
-
-async def test_analyzer_prefers_longer_history_before_score() -> None:
-    analyzer = ChartAnalyzer([HistoryPriorityProvider()], MemoryCache(), max_candles=24)
-
-    result = await analyzer.analyze("KAS")
-
-    assert result.best is not None
-    assert result.best.symbol.tradingview_exchange == "GATEIO"
-
-
-async def test_cache_key_uses_current_history_version() -> None:
-    cache = MemoryCache()
-    analyzer = ChartAnalyzer([FakeProvider()], cache, max_candles=10)
-
-    await analyzer.analyze("BTC")
-
-    assert cache.value is not None
-
-
-class KaiaExchangeProvider(ExchangeProvider):
-    exchange_id = "kaia"
-    exchange_name = "Kaia"
-    tradingview_exchange = "KAIA"
-
-    async def find_markets(self, base: str, quotes: list[Quote]) -> list[MarketSymbol]:
-        return [
-            MarketSymbol("kaia", "Kaia", base, Quote.USDT, f"{base}/USDT", "MEXC"),
-            MarketSymbol("kaia", "Kaia", base, Quote.USDT, f"{base}/USDT", "BITGET"),
-        ]
-
-    async def fetch_hourly_candles(self, market: MarketSymbol, *, limit: int) -> list[Candle]:
-        raise AssertionError("Exchange candles must not be used when TradingView source is configured")
-
-    async def find_earliest_history_candle(self, market: MarketSymbol) -> Candle | None:
-        raise AssertionError("Exchange history must not be used when TradingView source is configured")
+        raise AssertionError("Exchange candles must not be used for TradingView ranking")
 
 
 class FakeTradingViewSource:
+    def __init__(self, earliest_by_exchange: dict[str, datetime], *, empty: set[str] | None = None) -> None:
+        self.earliest_by_exchange = earliest_by_exchange
+        self.empty = empty or set()
+
     async def fetch_hourly_candles(self, market: MarketSymbol, *, limit: int) -> list[Candle]:
-        start = datetime(2026, 1, 1, tzinfo=timezone.utc)
-        return [
-            Candle(
-                timestamp=start + timedelta(hours=index),
-                open=1,
-                high=2,
-                low=0.5,
-                close=1.5,
-                volume=10_000,
-            )
-            for index in range(24)
-        ]
-
-    async def find_earliest_history_candle(self, market: MarketSymbol) -> Candle | None:
-        if market.tradingview_exchange == "BITGET":
-            timestamp = datetime(2025, 2, 1, tzinfo=timezone.utc)
-        else:
-            timestamp = datetime(2025, 7, 1, tzinfo=timezone.utc)
-        return Candle(timestamp, 1, 2, 0.5, 1.5, 10_000)
-
-
-async def test_analyzer_uses_tradingview_source_for_history_and_quality() -> None:
-    analyzer = ChartAnalyzer(
-        [KaiaExchangeProvider()],
-        MemoryCache(),
-        max_candles=24,
-        tradingview_client=FakeTradingViewSource(),
-    )
-
-    result = await analyzer.analyze("KAIA")
-
-    assert result.best is not None
-    assert result.best.symbol.tradingview_exchange == "BITGET"
-    assert result.best.metrics.first_candle_at == datetime(2025, 2, 1, tzinfo=timezone.utc)
-
-
-class EmptyTradingViewSource:
-    async def fetch_hourly_candles(self, market: MarketSymbol, *, limit: int) -> list[Candle]:
-        return []
-
-    async def find_earliest_history_candle(self, market: MarketSymbol) -> Candle | None:
-        return None
-
-
-async def test_analyzer_falls_back_when_tradingview_returns_no_candles() -> None:
-    analyzer = ChartAnalyzer(
-        [FakeProvider()],
-        MemoryCache(),
-        max_candles=24,
-        tradingview_client=EmptyTradingViewSource(),
-    )
-
-    result = await analyzer.analyze("SOL")
-
-    assert result.best is not None
-    assert any("запасной источник" in penalty for penalty in result.best.penalties)
-
-
-class MixedTradingViewSource:
-    async def fetch_hourly_candles(self, market: MarketSymbol, *, limit: int) -> list[Candle]:
-        if market.tradingview_exchange == "MEXC":
+        if market.tradingview_exchange in self.empty:
             return []
         start = datetime(2026, 1, 1, tzinfo=timezone.utc)
         return [
@@ -216,85 +54,133 @@ class MixedTradingViewSource:
                 high=2,
                 low=0.5,
                 close=1.5,
-                volume=10_000,
+                volume=10_000 if market.tradingview_exchange != "MEXC" else 20_000,
             )
-            for index in range(24)
+            for index in range(limit)
         ]
 
     async def find_earliest_history_candle(self, market: MarketSymbol) -> Candle | None:
-        return Candle(datetime(2025, 7, 1, tzinfo=timezone.utc), 1, 2, 0.5, 1.5, 10_000)
+        timestamp = self.earliest_by_exchange[market.tradingview_exchange]
+        return Candle(timestamp, 1, 2, 0.5, 1.5, 10_000)
 
 
-class LongMexcFallbackProvider(ExchangeProvider):
-    exchange_id = "mixed"
-    exchange_name = "Mixed"
-    tradingview_exchange = "MIXED"
-
-    async def find_markets(self, base: str, quotes: list[Quote]) -> list[MarketSymbol]:
-        return [
-            MarketSymbol("mixed", "Mixed", base, Quote.USDT, f"{base}/USDT", "MEXC"),
-            MarketSymbol("mixed", "Mixed", base, Quote.USDT, f"{base}/USDT", "BITGET"),
-        ]
-
-    async def fetch_hourly_candles(self, market: MarketSymbol, *, limit: int) -> list[Candle]:
-        start = datetime(2026, 1, 1, tzinfo=timezone.utc)
-        return [
-            Candle(
-                timestamp=start + timedelta(hours=index),
-                open=1,
-                high=2,
-                low=0.5,
-                close=1.5,
-                volume=10_000,
-            )
-            for index in range(24)
-        ]
-
-    async def find_earliest_history_candle(self, market: MarketSymbol) -> Candle | None:
-        return Candle(datetime(2019, 9, 1, tzinfo=timezone.utc), 1, 2, 0.5, 1.5, 10_000)
+def market(exchange: str, quote: Quote, base: str = "SUI") -> MarketSymbol:
+    return MarketSymbol(exchange.lower(), exchange.title(), base, quote, f"{base}/{quote.value}", exchange)
 
 
-async def test_tradingview_sourced_chart_beats_longer_exchange_fallback() -> None:
+def test_normalize_asset() -> None:
+    assert normalize_asset("BINANCE:btcusdt") == "BTC"
+    assert normalize_asset(" eth ") == "ETH"
+
+
+async def test_analyzer_ranks_tradingview_markets_and_checks_mexc() -> None:
+    markets = [market("MEXC", Quote.USDT), market("COINBASE", Quote.USD)]
+    tv = FakeTradingViewSource(
+        {
+            "MEXC": datetime(2023, 1, 1, tzinfo=timezone.utc),
+            "COINBASE": datetime(2023, 1, 1, tzinfo=timezone.utc),
+        }
+    )
     analyzer = ChartAnalyzer(
-        [LongMexcFallbackProvider()],
+        [StaticProvider(markets)],
         MemoryCache(),
         max_candles=24,
-        tradingview_client=MixedTradingViewSource(),
+        mexc_futures_checker=FakeMexcFuturesChecker(),
+        tradingview_client=tv,
     )
+
+    result = await analyzer.analyze("SUI")
+
+    assert result.best is not None
+    assert result.best.symbol.tradingview_symbol == "MEXC:SUIUSDT"
+    assert len(result.ranked) == 2
+    assert result.mexc_futures_available is True
+
+
+async def test_post_usdt_asset_prefers_usable_usdt_over_usd() -> None:
+    markets = [market("COINBASE", Quote.USD, "ATOM"), market("MEXC", Quote.USDT, "ATOM")]
+    tv = FakeTradingViewSource(
+        {
+            "COINBASE": datetime(2019, 3, 1, tzinfo=timezone.utc),
+            "MEXC": datetime(2019, 3, 1, tzinfo=timezone.utc),
+        }
+    )
+    analyzer = ChartAnalyzer([StaticProvider(markets)], MemoryCache(), max_candles=24, tradingview_client=tv)
+
+    result = await analyzer.analyze("ATOM")
+
+    assert result.best is not None
+    assert result.best.symbol.quote is Quote.USDT
+
+
+async def test_pre_usdt_asset_can_choose_longer_usd_history() -> None:
+    markets = [market("COINBASE", Quote.USD, "BTC"), market("MEXC", Quote.USDT, "BTC")]
+    tv = FakeTradingViewSource(
+        {
+            "COINBASE": datetime(2014, 1, 1, tzinfo=timezone.utc),
+            "MEXC": datetime(2017, 1, 1, tzinfo=timezone.utc),
+        }
+    )
+    analyzer = ChartAnalyzer([StaticProvider(markets)], MemoryCache(), max_candles=24, tradingview_client=tv)
+
+    result = await analyzer.analyze("BTC")
+
+    assert result.best is not None
+    assert result.best.symbol.quote is Quote.USD
+
+
+async def test_longer_usdt_history_wins_between_usdt_markets() -> None:
+    markets = [market("KUCOIN", Quote.USDT, "KAS"), market("GATEIO", Quote.USDT, "KAS")]
+    tv = FakeTradingViewSource(
+        {
+            "KUCOIN": datetime(2026, 5, 1, tzinfo=timezone.utc),
+            "GATEIO": datetime(2026, 3, 1, tzinfo=timezone.utc),
+        }
+    )
+    analyzer = ChartAnalyzer([StaticProvider(markets)], MemoryCache(), max_candles=24, tradingview_client=tv)
+
+    result = await analyzer.analyze("KAS")
+
+    assert result.best is not None
+    assert result.best.symbol.tradingview_exchange == "GATEIO"
+
+
+async def test_tradingview_empty_candidate_is_excluded() -> None:
+    markets = [market("MEXC", Quote.USDT, "KAIA"), market("BITGET", Quote.USDT, "KAIA")]
+    tv = FakeTradingViewSource(
+        {
+            "MEXC": datetime(2019, 9, 1, tzinfo=timezone.utc),
+            "BITGET": datetime(2025, 2, 1, tzinfo=timezone.utc),
+        },
+        empty={"MEXC"},
+    )
+    analyzer = ChartAnalyzer([StaticProvider(markets)], MemoryCache(), max_candles=24, tradingview_client=tv)
 
     result = await analyzer.analyze("KAIA")
 
     assert result.best is not None
     assert result.best.symbol.tradingview_exchange == "BITGET"
+    assert all(item.symbol.tradingview_exchange != "MEXC" for item in result.ranked)
 
 
-async def test_exchange_fallback_does_not_use_exchange_long_history() -> None:
-    analyzer = ChartAnalyzer(
-        [LongMexcFallbackProvider()],
-        MemoryCache(),
-        max_candles=24,
-        tradingview_client=EmptyTradingViewSource(),
-    )
-
-    result = await analyzer.analyze("KAIA")
-
-    assert result.best is not None
-    assert result.best.metrics.history_days == 0
-    assert result.best.metrics.first_candle_at is None
-    assert any("запасной источник" in penalty for penalty in result.best.penalties)
-    assert any("не подтверждена" in penalty for penalty in result.best.penalties)
-
-
-async def test_fallback_result_does_not_report_quality_window_as_first_tradingview_candle() -> None:
-    analyzer = ChartAnalyzer(
-        [FakeProvider()],
-        MemoryCache(),
-        max_candles=24,
-        tradingview_client=EmptyTradingViewSource(),
-    )
+async def test_no_tradingview_candles_returns_no_ranked_results() -> None:
+    markets = [market("MEXC", Quote.USDT, "STABLE")]
+    tv = FakeTradingViewSource({"MEXC": datetime(2025, 1, 1, tzinfo=timezone.utc)}, empty={"MEXC"})
+    analyzer = ChartAnalyzer([StaticProvider(markets)], MemoryCache(), max_candles=24, tradingview_client=tv)
 
     result = await analyzer.analyze("STABLE")
 
-    assert result.best is not None
-    assert result.best.metrics.first_candle_at is None
-    assert result.best.metrics.history_days == 0
+    assert result.best is None
+    assert result.ranked == []
+
+
+async def test_cache_key_uses_current_version() -> None:
+    markets = [market("MEXC", Quote.USDT, "SUI")]
+    tv = FakeTradingViewSource({"MEXC": datetime(2023, 1, 1, tzinfo=timezone.utc)})
+    cache = MemoryCache()
+    analyzer = ChartAnalyzer([StaticProvider(markets)], cache, max_candles=10, tradingview_client=tv)
+
+    await analyzer.analyze("SUI")
+
+    assert cache.key is not None
+    assert cache.key.startswith("tv-clean-v9:SUI")
