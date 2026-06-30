@@ -9,7 +9,7 @@ from app.providers.base import ExchangeProvider, ProviderError
 from app.storage.cache import AnalysisCache
 
 logger = logging.getLogger(__name__)
-CACHE_VERSION = "tv-mexc-futures-v4"
+CACHE_VERSION = "tv-mexc-futures-v5"
 FALLBACK_PENALTY = "TradingView не отдал свечи; история не подтверждена"
 
 
@@ -165,6 +165,18 @@ class ChartAnalyzer:
             raise ProviderError(f"TradingView returned no candles for {market.tradingview_symbol}")
         earliest = await self.tradingview_client.find_earliest_history_candle(market)
         return candles, earliest
+
+    async def probe_mexc_futures(self, query: str) -> str:
+        normalized = normalize_asset(query)
+        result = await self._check_mexc_futures(normalized)
+        symbol = f"{normalized}_USDT"
+        if result is True:
+            status = "Да"
+        elif result is False:
+            status = "Нет"
+        else:
+            status = "не удалось проверить"
+        return f"MEXC Futures для {normalized}: {status}\nПроверялся точный контракт: {symbol}"
 
     async def _check_mexc_futures(self, asset: str) -> bool | None:
         if self.mexc_futures_checker is None:

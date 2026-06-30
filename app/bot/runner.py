@@ -51,6 +51,15 @@ def build_router(analyzer: ChartAnalyzer) -> Router:
             result = "TradingView не ответил за 25 секунд. Это уже не зависание бота, а недоступность источника/биржевого поиска."
         await status.edit_text(result)
 
+    @router.message(Command("mexc"))
+    async def mexc(message: Message) -> None:
+        query = _command_arg(message)
+        if not query:
+            await message.answer("Напиши так: /mexc MORPHO")
+            return
+        result = await analyzer.probe_mexc_futures(query)
+        await message.answer(result)
+
     @router.message(Command("compare"))
     async def compare(message: Message) -> None:
         query = _command_arg(message)
