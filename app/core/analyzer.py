@@ -10,7 +10,7 @@ from app.providers.base import ExchangeProvider, ProviderError
 from app.storage.cache import AnalysisCache
 
 logger = logging.getLogger(__name__)
-CACHE_VERSION = "tv-fast-timeouts-v16"
+CACHE_VERSION = "tv-all-tvtest-v17"
 FALLBACK_PENALTY = "TradingView не отдал свечи, использован запасной источник биржи"
 
 
@@ -65,32 +65,35 @@ class ChartAnalyzer:
         if not markets:
             return f"Не нашел рынки для {normalized}."
 
-        checked_markets = markets[:3]
+        checked_markets = sorted(markets, key=_tvtest_market_key)
         lines = [f"TradingView test для {normalized}:", ""]
         probes = await asyncio.gather(
             *[
                 asyncio.wait_for(
                     self.tradingview_client.probe(market, interval="1D", limit=3),
-                    timeout=10,
+                    timeout=9,
                 )
                 for market in checked_markets
             ],
             return_exceptions=True,
         )
+        ok_count = 0
         for market, probe in zip(checked_markets, probes, strict=True):
             if isinstance(probe, Exception):
-                lines.append(f"{market.tradingview_symbol}: таймаут/ошибка {probe}")
+                lines.append(f"{market.tradingview_symbol}: нет ({_short_error(probe)})")
                 continue
             if probe.ok:
+                ok_count += 1
                 first = probe.first_candle_at.date().isoformat() if probe.first_candle_at else "?"
                 lines.append(
                     f"{probe.symbol}: да, свечей {probe.candles}, первая {first}, метод {probe.strategy}"
                 )
             else:
-                lines.append(f"{probe.symbol}: нет ({probe.error})")
-        if len(markets) > len(checked_markets):
-            lines.append(f"\nПоказаны первые {len(checked_markets)} из {len(markets)} рынков.")
-        return "\n".join(lines)
+                lines.append(f"{probe.symbol}: нет ({probe.error or 'no candles'})")
+        lines.append(f"
+Проверено рынков: {len(checked_markets)}. Рабочих через TradingView: {ok_count}.")
+        return "
+".join(lines)
 
     async def _find_markets(self, asset: str) -> list[MarketSymbol]:
         tasks = [provider.find_markets(asset, quotes=[Quote.USDT, Quote.USD]) for provider in self.providers]
@@ -216,3 +219,29 @@ def _rank_key(item: ChartScore) -> tuple[int, int, float, int, float]:
     )
     quote_priority = 1 if item.symbol.quote is Quote.USDT else 0
     return (source_priority, is_usable, metrics.history_days, quote_priority, item.score)
+
+
+_TVTEST_EXCHANGE_PRIORITY = {
+    "BITGET": 0,
+    "MEXC": 1,
+    "GATEIO": 2,
+    "KUCOIN": 3,
+    "OKX": 4,
+    "BINANCE": 5,
+    "BYBIT": 6,
+}
+
+
+def _tvtest_market_key(market: MarketSymbol) -> tuple[int, int, str]:
+    quote_priority = 0 if market.quote is Quote.USDT else 1
+    exchange_priority = _TVTEST_EXCHANGE_PRIORITY.get(market.tradingview_exchange, 99)
+    return (quote_priority, exchange_priority, market.tradingview_symbol)
+
+
+def _short_error(exc: Exception) -> str:
+    if isinstance(exc, TimeoutError):
+        return "timeout"
+    text = str(exc).strip()
+    if text:
+        return text[:160]
+    return exc.__class__.__name__

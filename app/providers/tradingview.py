@@ -66,7 +66,7 @@ class TradingViewClient:
                 candles=0,
                 first_candle_at=None,
                 strategy=None,
-                error=str(exc),
+                error=_format_exception(exc),
             )
         return TradingViewProbe(
             symbol=market.tradingview_symbol,
@@ -111,7 +111,7 @@ class TradingViewClient:
                 return candles, strategy_name
         if last_error is not None:
             raise ProviderError(
-                f"TradingView request failed for {market.tradingview_symbol} {interval}: {last_error}"
+                f"TradingView request failed for {market.tradingview_symbol} {interval}: {_format_exception(last_error)}"
             ) from last_error
         return [], None
 
@@ -178,7 +178,8 @@ async def _read_series(websocket: Any, chart_session: str) -> list[Candle]:
             if method == "series_completed" and latest:
                 return latest
             if method == "symbol_error":
-                return []
+                details = params[1] if len(params) > 1 else "symbol_error"
+                raise ProviderError(f"symbol_error: {details}")
     return latest
 
 
@@ -224,6 +225,10 @@ def _decode_messages(raw: str) -> list[dict[str, Any]]:
 
 
 def _parse_series(series: dict[str, Any]) -> list[Candle]:
+    row_candles = _parse_row_series(series)
+    if row_candles:
+        return row_candles
+
     timestamps = series.get("t") or []
     opens = series.get("o") or []
     highs = series.get("h") or []
@@ -254,6 +259,48 @@ def _parse_series(series: dict[str, Any]) -> list[Candle]:
     return sorted(candles, key=lambda candle: candle.timestamp)
 
 
+def _parse_row_series(series: dict[str, Any]) -> list[Candle]:
+    rows = series.get("s") or []
+    candles: list[Candle] = []
+    if not isinstance(rows, list):
+        return candles
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        values = row.get("v") or []
+        if len(values) < 5:
+            continue
+        try:
+            timestamp = values[0]
+            open_ = values[1]
+            high = values[2]
+            low = values[3]
+            close = values[4]
+            volume = values[5] if len(values) > 5 else 0
+            candles.append(
+                Candle(
+                    timestamp=datetime.fromtimestamp(float(timestamp), tz=timezone.utc),
+                    open=float(open_),
+                    high=float(high),
+                    low=float(low),
+                    close=float(close),
+                    volume=float(volume or 0),
+                )
+            )
+        except (TypeError, ValueError):
+            continue
+    return sorted(candles, key=lambda candle: candle.timestamp)
+
+
 def _session_id(prefix: str) -> str:
     suffix = "".join(random.choice(string.ascii_lowercase) for _ in range(12))
     return f"{prefix}_{suffix}"
+
+
+def _format_exception(exc: Exception) -> str:
+    if isinstance(exc, TimeoutError):
+        return "timeout"
+    text = str(exc).strip()
+    if text:
+        return text[:200]
+    return exc.__class__.__name__

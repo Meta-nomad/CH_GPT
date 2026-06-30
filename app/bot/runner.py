@@ -46,9 +46,9 @@ def build_router(analyzer: ChartAnalyzer) -> Router:
             return
         status = await message.answer("Проверяю доступ TradingView...")
         try:
-            result = await asyncio.wait_for(analyzer.probe_tradingview(query), timeout=15)
+            result = await asyncio.wait_for(analyzer.probe_tradingview(query), timeout=25)
         except TimeoutError:
-            result = "TradingView не ответил за 15 секунд. Это уже не зависание бота, а недоступность источника/биржевого поиска."
+            result = "TradingView не ответил за 25 секунд. Это уже не зависание бота, а недоступность источника/биржевого поиска."
         await status.edit_text(result)
 
     @router.message(Command("compare"))
