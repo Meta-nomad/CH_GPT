@@ -9,7 +9,7 @@ from app.providers.base import ExchangeProvider, ProviderError
 from app.storage.cache import AnalysisCache
 
 logger = logging.getLogger(__name__)
-CACHE_VERSION = "tv-primary-search-v1"
+CACHE_VERSION = "tv-primary-search-v2"
 FALLBACK_PENALTY = "TradingView не отдал свечи; история не подтверждена"
 
 
@@ -190,7 +190,7 @@ def normalize_asset(value: str) -> str:
     return "".join(ch for ch in cleaned if ch.isalnum())
 
 
-def _rank_key(item: ChartScore) -> tuple[int, float, int, float]:
+def _rank_key(item: ChartScore) -> tuple[int, float, int, float, float, float, float, float, int, int]:
     metrics = item.metrics
     expected = max(metrics.actual_candles + metrics.gap_count, 1)
     gap_ratio = metrics.gap_count / expected
@@ -201,7 +201,18 @@ def _rank_key(item: ChartScore) -> tuple[int, float, int, float]:
         and metrics.spike_count <= 10
     )
     quote_priority = 1 if item.symbol.quote is Quote.USDT else 0
-    return (is_usable, metrics.history_days, quote_priority, item.score)
+    return (
+        is_usable,
+        metrics.history_days,
+        quote_priority,
+        item.score,
+        metrics.average_volume,
+        -gap_ratio,
+        -metrics.flat_candle_ratio,
+        -metrics.zero_volume_ratio,
+        -metrics.spike_count,
+        _exchange_priority_score(item.symbol.tradingview_exchange),
+    )
 
 
 _TVTEST_EXCHANGE_PRIORITY = {
@@ -222,6 +233,10 @@ def _tvtest_market_key(market: MarketSymbol) -> tuple[int, int, str]:
     quote_priority = 0 if market.quote is Quote.USDT else 1
     exchange_priority = _TVTEST_EXCHANGE_PRIORITY.get(market.tradingview_exchange, 99)
     return (quote_priority, exchange_priority, market.tradingview_symbol)
+
+
+def _exchange_priority_score(exchange: str) -> int:
+    return 100 - _TVTEST_EXCHANGE_PRIORITY.get(exchange, 99)
 
 
 def _short_error(exc: Exception) -> str:

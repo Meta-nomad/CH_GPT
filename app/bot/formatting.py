@@ -24,6 +24,7 @@ def format_analysis(result: AnalysisResult) -> str:
         "",
         "Почему он выбран:",
         *[f"✓ {reason}" for reason in best.reasons[:4]],
+        *_format_selection_detail(result),
     ]
 
     if result.mexc_futures_available is False:
@@ -40,7 +41,10 @@ def format_analysis(result: AnalysisResult) -> str:
     if alternatives:
         lines.extend(["", "Альтернативы:"])
         for index, item in enumerate(alternatives, start=2):
-            lines.append(f"{index}. {item.symbol.tradingview_symbol} - {item.score:.2f}")
+            lines.append(
+                f"{index}. {item.symbol.tradingview_symbol} - {item.score:.2f}, "
+                f"{_history_label(item)}, объем {_volume_label(item)}"
+            )
 
     return "\n".join(lines)
 
@@ -96,3 +100,35 @@ def _history_label(item: ChartScore) -> str:
     if days >= 365:
         return f"{days / 365:.1f} лет"
     return f"{days:.0f} дней"
+
+
+def _format_selection_detail(result: AnalysisResult) -> list[str]:
+    if len(result.ranked) < 2 or result.best is None:
+        return []
+    best = result.best
+    second = result.ranked[1]
+    same_history = abs(best.metrics.history_days - second.metrics.history_days) < 0.5
+    same_quality = (
+        best.metrics.gap_count == second.metrics.gap_count
+        and abs(best.metrics.flat_candle_ratio - second.metrics.flat_candle_ratio) < 0.0001
+        and abs(best.metrics.zero_volume_ratio - second.metrics.zero_volume_ratio) < 0.0001
+        and best.metrics.spike_count == second.metrics.spike_count
+    )
+    same_quote = best.symbol.quote == second.symbol.quote
+    if not (same_history and same_quality and same_quote):
+        return []
+
+    best_volume = best.metrics.average_volume
+    second_volume = second.metrics.average_volume
+    if best_volume > second_volume * 1.05:
+        return ["✓ при равной истории и чистоте выше средний часовой объем TradingView"]
+    return ["✓ история и качество почти равны с альтернативами; выбран по техническому приоритету бирж"]
+
+
+def _volume_label(item: ChartScore) -> str:
+    value = item.metrics.average_volume
+    if value >= 1_000_000:
+        return f"{value / 1_000_000:.1f}M"
+    if value >= 1_000:
+        return f"{value / 1_000:.1f}K"
+    return f"{value:.0f}"
