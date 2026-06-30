@@ -124,3 +124,42 @@ async def test_cache_key_uses_current_history_version() -> None:
     await analyzer.analyze("BTC")
 
     assert cache.value is not None
+
+
+class KaiaOverrideProvider(ExchangeProvider):
+    exchange_id = "kaia"
+    exchange_name = "Kaia"
+    tradingview_exchange = "KAIA"
+
+    async def find_markets(self, base: str, quotes: list[Quote]) -> list[MarketSymbol]:
+        return [
+            MarketSymbol("kaia", "Kaia", base, Quote.USDT, f"{base}/USDT", "MEXC"),
+            MarketSymbol("kaia", "Kaia", base, Quote.USDT, f"{base}/USDT", "BITGET"),
+        ]
+
+    async def fetch_hourly_candles(self, market: MarketSymbol, *, limit: int) -> list[Candle]:
+        start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        return [
+            Candle(
+                timestamp=start + timedelta(hours=index),
+                open=1,
+                high=2,
+                low=0.5,
+                close=1.5,
+                volume=10_000,
+            )
+            for index in range(24)
+        ]
+
+    async def find_earliest_history_candle(self, market: MarketSymbol) -> Candle | None:
+        return Candle(datetime(2019, 9, 1, tzinfo=timezone.utc), 1, 2, 0.5, 1.5, 10_000)
+
+
+async def test_tradingview_override_wins_over_exchange_ohlcv_history() -> None:
+    analyzer = ChartAnalyzer([KaiaOverrideProvider()], MemoryCache(), max_candles=24)
+
+    result = await analyzer.analyze("KAIA")
+
+    assert result.best is not None
+    assert result.best.symbol.tradingview_exchange == "BITGET"
+    assert result.best.metrics.first_candle_at == datetime(2025, 2, 1, tzinfo=timezone.utc)

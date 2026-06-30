@@ -3,13 +3,14 @@ from __future__ import annotations
 import asyncio
 import logging
 
+from app.core.history_overrides import get_tradingview_history_start
 from app.core.models import AnalysisResult, ChartScore, MarketSymbol, Quote, utc_now
 from app.core.scoring import calculate_metrics, infer_birth_year_from_metrics, score_chart
 from app.providers.base import ExchangeProvider, ProviderError
 from app.storage.cache import AnalysisCache
 
 logger = logging.getLogger(__name__)
-CACHE_VERSION = "history-ohlcv-only-v6"
+CACHE_VERSION = "tv-history-overrides-v7"
 
 
 class ChartAnalyzer:
@@ -82,9 +83,11 @@ class ChartAnalyzer:
 
         candles = await provider.fetch_hourly_candles(market, limit=self.max_candles)
         earliest = await provider.find_earliest_history_candle(market)
+        override_start = get_tradingview_history_start(market)
+        history_start_at = override_start or (earliest.timestamp if earliest else None)
         metrics = calculate_metrics(
             candles,
-            history_start_at=earliest.timestamp if earliest else None,
+            history_start_at=history_start_at,
         )
         birth_year = infer_birth_year_from_metrics(metrics.first_candle_at)
         return score_chart(
