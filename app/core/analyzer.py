@@ -10,7 +10,8 @@ from app.providers.base import ExchangeProvider, ProviderError
 from app.storage.cache import AnalysisCache
 
 logger = logging.getLogger(__name__)
-CACHE_VERSION = "tradingview-fallback-v9"
+CACHE_VERSION = "tradingview-priority-v11"
+FALLBACK_PENALTY = "TradingView не отдал свечи, использован запасной источник биржи"
 
 
 class ChartAnalyzer:
@@ -106,7 +107,7 @@ class ChartAnalyzer:
                 score=round(max(scored.score - 20, 0), 2),
                 penalties=[
                     *scored.penalties,
-                    "TradingView не отдал свечи, использован запасной источник биржи",
+                    FALLBACK_PENALTY,
                 ],
             )
         return scored
@@ -132,8 +133,7 @@ class ChartAnalyzer:
         candles = await provider.fetch_hourly_candles(market, limit=self.max_candles)
         if not candles:
             raise ProviderError(f"No candles for {market.tradingview_symbol}")
-        earliest = await provider.find_earliest_history_candle(market)
-        return candles, earliest, "exchange"
+        return candles, None, "exchange"
 
     async def _check_mexc_futures(self, asset: str) -> bool | None:
         if self.mexc_futures_checker is None:
@@ -162,10 +162,11 @@ def normalize_asset(value: str) -> str:
     return "".join(ch for ch in cleaned if ch.isalnum())
 
 
-def _rank_key(item: ChartScore) -> tuple[int, float, int, float]:
+def _rank_key(item: ChartScore) -> tuple[int, int, float, int, float]:
     metrics = item.metrics
     expected = max(metrics.actual_candles + metrics.gap_count, 1)
     gap_ratio = metrics.gap_count / expected
+    source_priority = int(FALLBACK_PENALTY not in item.penalties)
     is_usable = int(
         gap_ratio <= 0.05
         and metrics.flat_candle_ratio <= 0.05
@@ -173,4 +174,4 @@ def _rank_key(item: ChartScore) -> tuple[int, float, int, float]:
         and metrics.spike_count <= 10
     )
     quote_priority = 1 if item.symbol.quote is Quote.USDT else 0
-    return (is_usable, metrics.history_days, quote_priority, item.score)
+    return (source_priority, is_usable, metrics.history_days, quote_priority, item.score)

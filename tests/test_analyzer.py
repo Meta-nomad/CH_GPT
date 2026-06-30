@@ -202,3 +202,82 @@ async def test_analyzer_falls_back_when_tradingview_returns_no_candles() -> None
 
     assert result.best is not None
     assert any("запасной источник" in penalty for penalty in result.best.penalties)
+
+
+class MixedTradingViewSource:
+    async def fetch_hourly_candles(self, market: MarketSymbol, *, limit: int) -> list[Candle]:
+        if market.tradingview_exchange == "MEXC":
+            return []
+        start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        return [
+            Candle(
+                timestamp=start + timedelta(hours=index),
+                open=1,
+                high=2,
+                low=0.5,
+                close=1.5,
+                volume=10_000,
+            )
+            for index in range(24)
+        ]
+
+    async def find_earliest_history_candle(self, market: MarketSymbol) -> Candle | None:
+        return Candle(datetime(2025, 7, 1, tzinfo=timezone.utc), 1, 2, 0.5, 1.5, 10_000)
+
+
+class LongMexcFallbackProvider(ExchangeProvider):
+    exchange_id = "mixed"
+    exchange_name = "Mixed"
+    tradingview_exchange = "MIXED"
+
+    async def find_markets(self, base: str, quotes: list[Quote]) -> list[MarketSymbol]:
+        return [
+            MarketSymbol("mixed", "Mixed", base, Quote.USDT, f"{base}/USDT", "MEXC"),
+            MarketSymbol("mixed", "Mixed", base, Quote.USDT, f"{base}/USDT", "BITGET"),
+        ]
+
+    async def fetch_hourly_candles(self, market: MarketSymbol, *, limit: int) -> list[Candle]:
+        start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        return [
+            Candle(
+                timestamp=start + timedelta(hours=index),
+                open=1,
+                high=2,
+                low=0.5,
+                close=1.5,
+                volume=10_000,
+            )
+            for index in range(24)
+        ]
+
+    async def find_earliest_history_candle(self, market: MarketSymbol) -> Candle | None:
+        return Candle(datetime(2019, 9, 1, tzinfo=timezone.utc), 1, 2, 0.5, 1.5, 10_000)
+
+
+async def test_tradingview_sourced_chart_beats_longer_exchange_fallback() -> None:
+    analyzer = ChartAnalyzer(
+        [LongMexcFallbackProvider()],
+        MemoryCache(),
+        max_candles=24,
+        tradingview_client=MixedTradingViewSource(),
+    )
+
+    result = await analyzer.analyze("KAIA")
+
+    assert result.best is not None
+    assert result.best.symbol.tradingview_exchange == "BITGET"
+
+
+async def test_exchange_fallback_does_not_use_exchange_long_history() -> None:
+    analyzer = ChartAnalyzer(
+        [LongMexcFallbackProvider()],
+        MemoryCache(),
+        max_candles=24,
+        tradingview_client=EmptyTradingViewSource(),
+    )
+
+    result = await analyzer.analyze("KAIA")
+
+    assert result.best is not None
+    assert result.best.metrics.history_days < 2
+    assert any("запасной источник" in penalty for penalty in result.best.penalties)
