@@ -10,7 +10,7 @@ from app.providers.base import ExchangeProvider, ProviderError
 from app.storage.cache import AnalysisCache
 
 logger = logging.getLogger(__name__)
-CACHE_VERSION = "tradingview-priority-v11"
+CACHE_VERSION = "tv-alt-strategies-v13"
 FALLBACK_PENALTY = "TradingView не отдал свечи, использован запасной источник биржи"
 
 
@@ -54,6 +54,29 @@ class ChartAnalyzer:
         self.cache.set(cache_key, result)
         return result
 
+    async def probe_tradingview(self, query: str) -> str:
+        normalized = normalize_asset(query)
+        if self.tradingview_client is None:
+            return "TradingView-клиент не подключен."
+        markets = await self._find_markets(normalized)
+        if not markets:
+            return f"Не нашел рынки для {normalized}."
+        lines = [f"TradingView test для {normalized}:", ""]
+        for market in markets[:10]:
+            try:
+                probe = await self.tradingview_client.probe(market, interval="1D", limit=5)
+            except Exception as exc:
+                lines.append(f"{market.tradingview_symbol}: ошибка {exc}")
+                continue
+            if probe.ok:
+                first = probe.first_candle_at.date().isoformat() if probe.first_candle_at else "?"
+                lines.append(
+                    f"{probe.symbol}: да, свечей {probe.candles}, первая {first}, метод {probe.strategy}"
+                )
+            else:
+                lines.append(f"{probe.symbol}: нет ({probe.error})")
+        return "\n".join(lines)
+
     async def _find_markets(self, asset: str) -> list[MarketSymbol]:
         tasks = [provider.find_markets(asset, quotes=[Quote.USDT, Quote.USD]) for provider in self.providers]
         results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -94,6 +117,8 @@ class ChartAnalyzer:
             candles,
             history_start_at=earliest.timestamp if earliest else None,
         )
+        if source_name != "TradingView":
+            metrics = replace(metrics, history_days=0, first_candle_at=None)
         birth_year = infer_birth_year_from_metrics(metrics.first_candle_at)
         scored = score_chart(
             market,
@@ -108,6 +133,7 @@ class ChartAnalyzer:
                 penalties=[
                     *scored.penalties,
                     FALLBACK_PENALTY,
+                    "История TradingView не подтверждена",
                 ],
             )
         return scored

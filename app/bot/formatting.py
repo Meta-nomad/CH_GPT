@@ -68,11 +68,11 @@ def format_compare(result: AnalysisResult) -> str:
 
 def _format_metrics(item: ChartScore) -> str:
     metrics = item.metrics
-    first_seen = metrics.first_candle_at.date().isoformat() if metrics.first_candle_at else "нет данных"
+    first_seen = metrics.first_candle_at.date().isoformat() if metrics.first_candle_at else "не подтверждена"
     return "\n".join(
         [
             f"История: {_history_label(item)}",
-            f"Первая свеча: {first_seen}",
+            f"Первая свеча TradingView: {first_seen}",
             f"Разрывы: {metrics.gap_count}",
             f"Плоские свечи: {metrics.flat_candle_ratio:.2%}",
             f"Нулевой объем: {metrics.zero_volume_ratio:.2%}",
@@ -90,6 +90,8 @@ def _format_mexc_futures(value: bool | None) -> str:
 
 
 def _history_label(item: ChartScore) -> str:
+    if item.metrics.first_candle_at is None:
+        return "не подтверждена TradingView"
     days = item.metrics.history_days
     if days >= 365:
         return f"{days / 365:.1f} лет"

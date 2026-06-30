@@ -37,6 +37,16 @@ def build_router(analyzer: ChartAnalyzer) -> Router:
             return
         await _answer_analysis(message, analyzer, query)
 
+    @router.message(Command("tvtest"))
+    async def tvtest(message: Message) -> None:
+        query = _command_arg(message)
+        if not query:
+            await message.answer("Напиши так: /tvtest BTC")
+            return
+        status = await message.answer("Проверяю доступ TradingView...")
+        result = await analyzer.probe_tradingview(query)
+        await status.edit_text(result)
+
     @router.message(Command("compare"))
     async def compare(message: Message) -> None:
         query = _command_arg(message)

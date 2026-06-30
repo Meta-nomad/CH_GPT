@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from app.providers.tradingview import _decode_messages, _parse_series
+from app.providers.tradingview import _decode_messages, _parse_series, _resolve_symbol_payloads
 
 
 def test_decode_tradingview_framed_messages() -> None:
@@ -28,3 +28,12 @@ def test_parse_series_to_candles() -> None:
     assert candles[0].low == 0.5
     assert candles[0].close == 1.5
     assert candles[0].volume == 10
+
+
+
+def test_resolve_symbol_payloads_include_equals_json_first() -> None:
+    payloads = _resolve_symbol_payloads("BINANCE:BTCUSDT")
+
+    assert payloads[0][0] == "equals_json_session"
+    assert payloads[0][1].startswith("={")
+    assert payloads[-1] == ("plain_symbol", "BINANCE:BTCUSDT")

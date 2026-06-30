@@ -279,5 +279,22 @@ async def test_exchange_fallback_does_not_use_exchange_long_history() -> None:
     result = await analyzer.analyze("KAIA")
 
     assert result.best is not None
-    assert result.best.metrics.history_days < 2
+    assert result.best.metrics.history_days == 0
+    assert result.best.metrics.first_candle_at is None
     assert any("запасной источник" in penalty for penalty in result.best.penalties)
+    assert any("не подтверждена" in penalty for penalty in result.best.penalties)
+
+
+async def test_fallback_result_does_not_report_quality_window_as_first_tradingview_candle() -> None:
+    analyzer = ChartAnalyzer(
+        [FakeProvider()],
+        MemoryCache(),
+        max_candles=24,
+        tradingview_client=EmptyTradingViewSource(),
+    )
+
+    result = await analyzer.analyze("STABLE")
+
+    assert result.best is not None
+    assert result.best.metrics.first_candle_at is None
+    assert result.best.metrics.history_days == 0
