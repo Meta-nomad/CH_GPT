@@ -6,8 +6,10 @@ from app.core.models import AnalysisResult, ChartScore
 def format_analysis(result: AnalysisResult) -> str:
     if not result.best:
         return (
-            "Не нашел подходящих графиков.\n\n"
-            "Попробуй тикер без пары, например BTC, ETH, SOL или SUI."
+            f"Не нашел USD/USDT-графики TradingView для <b>{result.query}</b>.\n\n"
+            "Я проверяю только криптовалютные графики. Если это акция, например NASDAQ:MSTR, "
+            "она не подходит под текущую задачу. Если это крипто-токен, значит TradingView "
+            "не отдал свечи по популярным биржам."
         )
 
     best = result.best

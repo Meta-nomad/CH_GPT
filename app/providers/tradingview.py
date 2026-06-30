@@ -76,7 +76,9 @@ class TradingViewClient:
             asyncio.to_thread(_search_symbols_sync, base),
             timeout=SEARCH_TIMEOUT_SECONDS,
         )
-        return _symbols_to_markets(symbols, base=base, quotes=quotes)
+        found = _symbols_to_markets(symbols, base=base, quotes=quotes)
+        direct = _direct_crypto_markets(base, quotes=quotes)
+        return _merge_markets([*found, *direct])
 
     async def fetch_hourly_candles(self, market: MarketSymbol, *, limit: int) -> list[Candle]:
         return await self.fetch_candles(market, interval="60", limit=limit)
@@ -246,6 +248,36 @@ def _search_symbols_sync(base: str) -> list[dict[str, Any]]:
         symbols = data.get("symbols") or []
         return symbols if isinstance(symbols, list) else []
     return data if isinstance(data, list) else []
+
+
+def _direct_crypto_markets(base: str, *, quotes: list[Quote]) -> list[MarketSymbol]:
+    wanted_base = base.upper()
+    markets: list[MarketSymbol] = []
+    for exchange in _TV_DIRECT_EXCHANGES:
+        for quote in quotes:
+            markets.append(
+                MarketSymbol(
+                    exchange_id=TV_EXCHANGE_ID.get(exchange, exchange.lower()),
+                    exchange_name=TV_EXCHANGE_NAMES[exchange],
+                    base=wanted_base,
+                    quote=quote,
+                    market_symbol=f"{wanted_base}/{quote.value}",
+                    tradingview_exchange=exchange,
+                )
+            )
+    return markets
+
+
+def _merge_markets(markets: list[MarketSymbol]) -> list[MarketSymbol]:
+    seen: set[str] = set()
+    merged: list[MarketSymbol] = []
+    for market in markets:
+        key = market.tradingview_symbol
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(market)
+    return sorted(merged, key=_market_sort_key)
 
 
 def _symbols_to_markets(symbols: list[dict[str, Any]], *, base: str, quotes: list[Quote]) -> list[MarketSymbol]:

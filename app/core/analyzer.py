@@ -9,7 +9,7 @@ from app.providers.base import ExchangeProvider, ProviderError
 from app.storage.cache import AnalysisCache
 
 logger = logging.getLogger(__name__)
-CACHE_VERSION = "tv-primary-search-v2"
+CACHE_VERSION = "tv-mexc-futures-v4"
 FALLBACK_PENALTY = "TradingView не отдал свечи; история не подтверждена"
 
 
@@ -138,7 +138,7 @@ class ChartAnalyzer:
 
     async def _score_market_limited(self, market: MarketSymbol) -> ChartScore:
         async with self._score_semaphore:
-            return await self._score_market(market)
+            return await asyncio.wait_for(self._score_market(market), timeout=35)
 
     async def _score_market(self, market: MarketSymbol) -> ChartScore:
         candles, earliest = await self._fetch_tradingview_chart_data(market)
