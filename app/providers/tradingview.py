@@ -8,19 +8,55 @@ import string
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
+from urllib.parse import quote_plus
+from urllib.request import Request, urlopen
 
 import websockets
 
-from app.core.models import Candle, MarketSymbol
+from app.core.models import Candle, MarketSymbol, Quote
 from app.providers.base import ProviderError
 
 TRADINGVIEW_WS_URL = "wss://data.tradingview.com/socket.io/websocket"
+TRADINGVIEW_SEARCH_URL = "https://symbol-search.tradingview.com/symbol_search/v3/"
 AUTH_TOKEN = "unauthorized_user_token"
-CONNECT_TIMEOUT_SECONDS = 3
-READ_TIMEOUT_SECONDS = 2
-STRATEGY_TIMEOUT_SECONDS = 5
-PROBE_TIMEOUT_SECONDS = 8
-MAX_READ_MESSAGES = 8
+CONNECT_TIMEOUT_SECONDS = 4
+READ_TIMEOUT_SECONDS = 3
+STRATEGY_TIMEOUT_SECONDS = 7
+PROBE_TIMEOUT_SECONDS = 10
+SEARCH_TIMEOUT_SECONDS = 8
+MAX_READ_MESSAGES = 12
+
+TV_EXCHANGE_NAMES = {
+    "BINANCE": "Binance",
+    "BYBIT": "Bybit",
+    "COINBASE": "Coinbase",
+    "KRAKEN": "Kraken",
+    "BITSTAMP": "Bitstamp",
+    "OKX": "OKX",
+    "BITFINEX": "Bitfinex",
+    "KUCOIN": "KuCoin",
+    "MEXC": "MEXC",
+    "GATEIO": "Gate.io",
+    "BITGET": "Bitget",
+    "CRYPTOCOM": "Crypto.com",
+    "GEMINI": "Gemini",
+}
+
+TV_EXCHANGE_ID = {
+    "BINANCE": "binance",
+    "BYBIT": "bybit",
+    "COINBASE": "coinbase",
+    "KRAKEN": "kraken",
+    "BITSTAMP": "bitstamp",
+    "OKX": "okx",
+    "BITFINEX": "bitfinex",
+    "KUCOIN": "kucoin",
+    "MEXC": "mexc",
+    "GATEIO": "gateio",
+    "BITGET": "bitget",
+    "CRYPTOCOM": "cryptocom",
+    "GEMINI": "gemini",
+}
 
 
 @dataclass(frozen=True)
@@ -35,6 +71,13 @@ class TradingViewProbe:
 
 
 class TradingViewClient:
+    async def search_markets(self, base: str, *, quotes: list[Quote]) -> list[MarketSymbol]:
+        symbols = await asyncio.wait_for(
+            asyncio.to_thread(_search_symbols_sync, base),
+            timeout=SEARCH_TIMEOUT_SECONDS,
+        )
+        return _symbols_to_markets(symbols, base=base, quotes=quotes)
+
     async def fetch_hourly_candles(self, market: MarketSymbol, *, limit: int) -> list[Candle]:
         return await self.fetch_candles(market, interval="60", limit=limit)
 
@@ -51,11 +94,7 @@ class TradingViewClient:
     async def probe(self, market: MarketSymbol, *, interval: str = "1D", limit: int = 5) -> TradingViewProbe:
         try:
             candles, strategy = await asyncio.wait_for(
-                self._fetch_candles_with_strategy(
-                    market,
-                    interval=interval,
-                    limit=limit,
-                ),
+                self._fetch_candles_with_strategy(market, interval=interval, limit=limit),
                 timeout=PROBE_TIMEOUT_SECONDS,
             )
         except Exception as exc:
@@ -181,6 +220,126 @@ async def _read_series(websocket: Any, chart_session: str) -> list[Candle]:
                 details = params[1] if len(params) > 1 else "symbol_error"
                 raise ProviderError(f"symbol_error: {details}")
     return latest
+
+
+def _search_symbols_sync(base: str) -> list[dict[str, Any]]:
+    query = quote_plus(base.upper())
+    url = (
+        f"{TRADINGVIEW_SEARCH_URL}?text={query}&hl=1&exchange=&lang=en"
+        "&search_type=crypto&domain=production"
+    )
+    request = Request(
+        url,
+        headers={
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/126.0.0.0 Safari/537.36"
+            ),
+            "Origin": "https://www.tradingview.com",
+            "Referer": "https://www.tradingview.com/",
+        },
+    )
+    with urlopen(request, timeout=SEARCH_TIMEOUT_SECONDS) as response:
+        data = json.loads(response.read().decode("utf-8"))
+    if isinstance(data, dict):
+        symbols = data.get("symbols") or []
+        return symbols if isinstance(symbols, list) else []
+    return data if isinstance(data, list) else []
+
+
+def _symbols_to_markets(symbols: list[dict[str, Any]], *, base: str, quotes: list[Quote]) -> list[MarketSymbol]:
+    wanted_base = base.upper()
+    wanted_quotes = {quote.value for quote in quotes}
+    seen: set[str] = set()
+    markets: list[MarketSymbol] = []
+    for item in symbols:
+        exchange = _clean_exchange(item)
+        if exchange not in TV_EXCHANGE_NAMES:
+            continue
+        symbol = _clean_symbol(item)
+        if not symbol:
+            continue
+        quote = _detect_quote(item, symbol, wanted_quotes)
+        if quote is None:
+            continue
+        symbol_base = _detect_base(item, symbol, quote.value)
+        if symbol_base != wanted_base:
+            continue
+        key = f"{exchange}:{symbol}"
+        if key in seen:
+            continue
+        seen.add(key)
+        markets.append(
+            MarketSymbol(
+                exchange_id=TV_EXCHANGE_ID.get(exchange, exchange.lower()),
+                exchange_name=TV_EXCHANGE_NAMES[exchange],
+                base=wanted_base,
+                quote=quote,
+                market_symbol=f"{wanted_base}/{quote.value}",
+                tradingview_exchange=exchange,
+            )
+        )
+    return sorted(markets, key=_market_sort_key)
+
+
+def _clean_exchange(item: dict[str, Any]) -> str:
+    value = item.get("exchange") or item.get("prefix") or ""
+    return re.sub(r"[^A-Z0-9]", "", str(value).upper())
+
+
+def _clean_symbol(item: dict[str, Any]) -> str:
+    symbol = item.get("symbol") or item.get("ticker") or ""
+    return re.sub(r"[^A-Z0-9]", "", str(symbol).upper())
+
+
+def _detect_quote(item: dict[str, Any], symbol: str, wanted_quotes: set[str]) -> Quote | None:
+    candidates = [
+        item.get("currency_code"),
+        item.get("currency"),
+        item.get("quote_currency"),
+    ]
+    for candidate in candidates:
+        value = str(candidate or "").upper()
+        if value in wanted_quotes:
+            return Quote(value)
+    for quote in sorted(wanted_quotes, key=len, reverse=True):
+        if symbol.endswith(quote):
+            return Quote(quote)
+    return None
+
+
+def _detect_base(item: dict[str, Any], symbol: str, quote: str) -> str:
+    candidates = [
+        item.get("base_currency_code"),
+        item.get("base_currency"),
+        item.get("root"),
+    ]
+    for candidate in candidates:
+        value = re.sub(r"[^A-Z0-9]", "", str(candidate or "").upper())
+        if value:
+            return value
+    return symbol[: -len(quote)] if symbol.endswith(quote) else symbol
+
+
+def _market_sort_key(market: MarketSymbol) -> tuple[int, int, str]:
+    quote_priority = 0 if market.quote is Quote.USDT else 1
+    exchange_priority = _TV_EXCHANGE_PRIORITY.get(market.tradingview_exchange, 99)
+    return (quote_priority, exchange_priority, market.tradingview_symbol)
+
+
+_TV_EXCHANGE_PRIORITY = {
+    "BITGET": 0,
+    "MEXC": 1,
+    "GATEIO": 2,
+    "KUCOIN": 3,
+    "OKX": 4,
+    "BINANCE": 5,
+    "BYBIT": 6,
+    "KRAKEN": 7,
+    "BITFINEX": 8,
+    "COINBASE": 9,
+}
 
 
 def _resolve_symbol_payloads(symbol: str) -> list[tuple[str, str]]:

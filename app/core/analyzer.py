@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import replace
 
 from app.core.models import AnalysisResult, Candle, ChartScore, MarketSymbol, Quote, utc_now
 from app.core.scoring import calculate_metrics, infer_birth_year_from_metrics, score_chart
@@ -10,8 +9,8 @@ from app.providers.base import ExchangeProvider, ProviderError
 from app.storage.cache import AnalysisCache
 
 logger = logging.getLogger(__name__)
-CACHE_VERSION = "tv-all-tvtest-v17"
-FALLBACK_PENALTY = "TradingView не отдал свечи, использован запасной источник биржи"
+CACHE_VERSION = "tv-primary-search-v1"
+FALLBACK_PENALTY = "TradingView не отдал свечи; история не подтверждена"
 
 
 class ChartAnalyzer:
@@ -59,25 +58,26 @@ class ChartAnalyzer:
         if self.tradingview_client is None:
             return "TradingView-клиент не подключен."
         try:
-            markets = await asyncio.wait_for(self._find_markets(normalized), timeout=8)
+            markets = await asyncio.wait_for(self._find_markets(normalized), timeout=12)
         except TimeoutError:
-            return f"Поиск рынков для {normalized} занял слишком много времени. Попробуй еще раз."
+            return f"Поиск TradingView для {normalized} занял слишком много времени."
         if not markets:
-            return f"Не нашел рынки для {normalized}."
+            return f"TradingView не нашел рынки USD/USDT для {normalized}."
 
         checked_markets = sorted(markets, key=_tvtest_market_key)
-        lines = [f"TradingView test для {normalized}:", ""]
         probes = await asyncio.gather(
             *[
                 asyncio.wait_for(
                     self.tradingview_client.probe(market, interval="1D", limit=3),
-                    timeout=9,
+                    timeout=12,
                 )
                 for market in checked_markets
             ],
             return_exceptions=True,
         )
+
         ok_count = 0
+        lines = [f"TradingView test для {normalized}:", ""]
         for market, probe in zip(checked_markets, probes, strict=True):
             if isinstance(probe, Exception):
                 lines.append(f"{market.tradingview_symbol}: нет ({_short_error(probe)})")
@@ -90,12 +90,29 @@ class ChartAnalyzer:
                 )
             else:
                 lines.append(f"{probe.symbol}: нет ({probe.error or 'no candles'})")
-        lines.append(f"
-Проверено рынков: {len(checked_markets)}. Рабочих через TradingView: {ok_count}.")
-        return "
-".join(lines)
+        lines.append("")
+        lines.append(f"Проверено рынков: {len(checked_markets)}. Рабочих через TradingView: {ok_count}.")
+        return "\n".join(lines)
 
     async def _find_markets(self, asset: str) -> list[MarketSymbol]:
+        tv_markets = await self._find_tradingview_markets(asset)
+        if tv_markets:
+            return tv_markets
+        return await self._find_exchange_markets(asset)
+
+    async def _find_tradingview_markets(self, asset: str) -> list[MarketSymbol]:
+        if self.tradingview_client is None:
+            return []
+        search_markets = getattr(self.tradingview_client, "search_markets", None)
+        if search_markets is None:
+            return []
+        try:
+            return await asyncio.wait_for(search_markets(asset, quotes=[Quote.USDT, Quote.USD]), timeout=12)
+        except Exception as exc:
+            logger.warning("TradingView symbol search failed for %s: %s", asset, exc)
+            return []
+
+    async def _find_exchange_markets(self, asset: str) -> list[MarketSymbol]:
         tasks = [provider.find_markets(asset, quotes=[Quote.USDT, Quote.USD]) for provider in self.providers]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -105,8 +122,7 @@ class ChartAnalyzer:
                 logger.warning("Provider %s failed during market search: %s", provider.exchange_id, result)
                 continue
             markets.extend(result)
-
-        return markets
+        return sorted(markets, key=_tvtest_market_key)
 
     async def _score_markets(self, markets: list[MarketSymbol]) -> list[ChartScore]:
         tasks = [self._score_market_limited(market) for market in markets]
@@ -118,7 +134,6 @@ class ChartAnalyzer:
                 logger.warning("Failed to score %s: %s", market.tradingview_symbol, result)
                 continue
             scored.append(result)
-
         return scored
 
     async def _score_market_limited(self, market: MarketSymbol) -> ChartScore:
@@ -126,58 +141,30 @@ class ChartAnalyzer:
             return await self._score_market(market)
 
     async def _score_market(self, market: MarketSymbol) -> ChartScore:
-        provider = self._provider_for(market.exchange_id)
-        if provider is None:
-            raise ProviderError(f"No provider for {market.exchange_id}")
-
-        candles, earliest, source_name = await self._fetch_chart_data(market, provider)
+        candles, earliest = await self._fetch_tradingview_chart_data(market)
         metrics = calculate_metrics(
             candles,
             history_start_at=earliest.timestamp if earliest else None,
         )
-        if source_name != "TradingView":
-            metrics = replace(metrics, history_days=0, first_candle_at=None)
         birth_year = infer_birth_year_from_metrics(metrics.first_candle_at)
-        scored = score_chart(
+        return score_chart(
             market,
             metrics,
             query_birth_year=birth_year,
             quote_policy_year=self.quote_policy_year,
         )
-        if source_name != "TradingView":
-            return replace(
-                scored,
-                score=round(max(scored.score - 20, 0), 2),
-                penalties=[
-                    *scored.penalties,
-                    FALLBACK_PENALTY,
-                    "История TradingView не подтверждена",
-                ],
-            )
-        return scored
 
-    async def _fetch_chart_data(
-        self,
-        market: MarketSymbol,
-        provider: ExchangeProvider,
-    ) -> tuple[list[Candle], Candle | None, str]:
-        if self.tradingview_client is not None:
-            try:
-                candles = await self.tradingview_client.fetch_hourly_candles(
-                    market,
-                    limit=self.max_candles,
-                )
-                if candles:
-                    earliest = await self.tradingview_client.find_earliest_history_candle(market)
-                    return candles, earliest, "TradingView"
-                logger.warning("TradingView returned no candles for %s", market.tradingview_symbol)
-            except Exception as exc:
-                logger.warning("TradingView failed for %s: %s", market.tradingview_symbol, exc)
-
-        candles = await provider.fetch_hourly_candles(market, limit=self.max_candles)
+    async def _fetch_tradingview_chart_data(self, market: MarketSymbol) -> tuple[list[Candle], Candle | None]:
+        if self.tradingview_client is None:
+            raise ProviderError("TradingView client is not available")
+        candles = await self.tradingview_client.fetch_hourly_candles(
+            market,
+            limit=self.max_candles,
+        )
         if not candles:
-            raise ProviderError(f"No candles for {market.tradingview_symbol}")
-        return candles, None, "exchange"
+            raise ProviderError(f"TradingView returned no candles for {market.tradingview_symbol}")
+        earliest = await self.tradingview_client.find_earliest_history_candle(market)
+        return candles, earliest
 
     async def _check_mexc_futures(self, asset: str) -> bool | None:
         if self.mexc_futures_checker is None:
@@ -192,9 +179,6 @@ class ChartAnalyzer:
             logger.warning("MEXC futures check failed for %s: %s", asset, exc)
             return None
 
-    def _provider_for(self, exchange_id: str) -> ExchangeProvider | None:
-        return next((provider for provider in self.providers if provider.exchange_id == exchange_id), None)
-
 
 def normalize_asset(value: str) -> str:
     cleaned = value.strip().upper()
@@ -206,11 +190,10 @@ def normalize_asset(value: str) -> str:
     return "".join(ch for ch in cleaned if ch.isalnum())
 
 
-def _rank_key(item: ChartScore) -> tuple[int, int, float, int, float]:
+def _rank_key(item: ChartScore) -> tuple[int, float, int, float]:
     metrics = item.metrics
     expected = max(metrics.actual_candles + metrics.gap_count, 1)
     gap_ratio = metrics.gap_count / expected
-    source_priority = int(FALLBACK_PENALTY not in item.penalties)
     is_usable = int(
         gap_ratio <= 0.05
         and metrics.flat_candle_ratio <= 0.05
@@ -218,7 +201,7 @@ def _rank_key(item: ChartScore) -> tuple[int, int, float, int, float]:
         and metrics.spike_count <= 10
     )
     quote_priority = 1 if item.symbol.quote is Quote.USDT else 0
-    return (source_priority, is_usable, metrics.history_days, quote_priority, item.score)
+    return (is_usable, metrics.history_days, quote_priority, item.score)
 
 
 _TVTEST_EXCHANGE_PRIORITY = {
@@ -229,6 +212,9 @@ _TVTEST_EXCHANGE_PRIORITY = {
     "OKX": 4,
     "BINANCE": 5,
     "BYBIT": 6,
+    "KRAKEN": 7,
+    "BITFINEX": 8,
+    "COINBASE": 9,
 }
 
 
