@@ -9,17 +9,18 @@ from app.providers.base import ExchangeProvider, ProviderError
 from app.storage.cache import AnalysisCache
 
 logger = logging.getLogger(__name__)
-CACHE_VERSION = "tv-mexc-systemic-v22"
+CACHE_VERSION = "tv-fast-candidates-v23"
 
 QUALITY_GAP_LIMIT = 0.05
 QUALITY_FLAT_LIMIT = 0.05
 QUALITY_ZERO_VOLUME_LIMIT = 0.10
 QUALITY_SPIKE_LIMIT = 10
-SCORE_TIMEOUT_SECONDS = 35
-MARKET_SEARCH_TIMEOUT_SECONDS = 12
-TV_PROBE_TIMEOUT_SECONDS = 12
+SCORE_TIMEOUT_SECONDS = 14
+MARKET_SEARCH_TIMEOUT_SECONDS = 7
+TV_PROBE_TIMEOUT_SECONDS = 7
+MAX_SCORE_MARKETS = 24
 MEXC_USDT_POLICY_YEAR = 2015
-MEXC_FAST_CHECK_TIMEOUT_SECONDS = 3
+MEXC_FAST_CHECK_TIMEOUT_SECONDS = 2
 
 
 class ChartAnalyzer:
@@ -172,7 +173,7 @@ class ChartAnalyzer:
         return sorted(_dedupe_markets(markets), key=_market_display_key)
 
     async def _score_markets(self, markets: list[MarketSymbol]) -> list[ChartScore]:
-        unique_markets = _dedupe_markets(markets)
+        unique_markets = _select_score_candidates(_dedupe_markets(markets))
         tasks = [self._score_market_limited(market) for market in unique_markets]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -205,13 +206,16 @@ class ChartAnalyzer:
     async def _fetch_tradingview_chart_data(self, market: MarketSymbol) -> tuple[list[Candle], Candle | None]:
         if self.tradingview_client is None:
             raise ProviderError("TradingView client is not available")
-        candles = await self.tradingview_client.fetch_hourly_candles(
-            market,
-            limit=self.max_candles,
+        hourly_task = asyncio.create_task(
+            self.tradingview_client.fetch_hourly_candles(
+                market,
+                limit=self.max_candles,
+            )
         )
+        earliest_task = asyncio.create_task(self.tradingview_client.find_earliest_history_candle(market))
+        candles, earliest = await asyncio.gather(hourly_task, earliest_task)
         if not candles:
             raise ProviderError(f"TradingView returned no candles for {market.tradingview_symbol}")
-        earliest = await self.tradingview_client.find_earliest_history_candle(market)
         return candles, earliest
 
     async def _check_mexc_futures(self, asset: str) -> bool | None:
@@ -291,6 +295,61 @@ def _dedupe_markets(markets: list[MarketSymbol]) -> list[MarketSymbol]:
         seen.add(key)
         unique.append(market)
     return unique
+
+
+def _select_score_candidates(markets: list[MarketSymbol]) -> list[MarketSymbol]:
+    if len(markets) <= MAX_SCORE_MARKETS:
+        return markets
+
+    by_key = {(market.tradingview_exchange, market.quote): market for market in markets}
+    selected: list[MarketSymbol] = []
+    seen: set[str] = set()
+    for exchange in _SCORING_EXCHANGE_PRIORITY:
+        for quote in (Quote.USDT, Quote.USD):
+            market = by_key.get((exchange, quote))
+            if market is None or market.tradingview_symbol in seen:
+                continue
+            selected.append(market)
+            seen.add(market.tradingview_symbol)
+            if len(selected) >= MAX_SCORE_MARKETS:
+                return selected
+
+    for market in sorted(markets, key=_score_candidate_key):
+        if market.tradingview_symbol in seen:
+            continue
+        selected.append(market)
+        seen.add(market.tradingview_symbol)
+        if len(selected) >= MAX_SCORE_MARKETS:
+            break
+    return selected
+
+
+def _score_candidate_key(market: MarketSymbol) -> tuple[int, int, int, str]:
+    quote_priority = 0 if market.quote is Quote.USDT else 1
+    exchange_priority = _SCORING_EXCHANGE_PRIORITY_MAP.get(market.tradingview_exchange, 99)
+    return (-market.match_priority, exchange_priority, quote_priority, market.tradingview_symbol)
+
+
+_SCORING_EXCHANGE_PRIORITY = (
+    "BINANCE",
+    "COINBASE",
+    "KRAKEN",
+    "BITSTAMP",
+    "BITFINEX",
+    "OKX",
+    "BYBIT",
+    "BITGET",
+    "MEXC",
+    "GATEIO",
+    "KUCOIN",
+    "CRYPTOCOM",
+    "GEMINI",
+    "HTX",
+    "WHITEBIT",
+)
+_SCORING_EXCHANGE_PRIORITY_MAP = {
+    exchange: index for index, exchange in enumerate(_SCORING_EXCHANGE_PRIORITY)
+}
 
 
 _EXCHANGE_DISPLAY_PRIORITY = {

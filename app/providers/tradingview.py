@@ -20,11 +20,11 @@ TRADINGVIEW_WS_URL = "wss://data.tradingview.com/socket.io/websocket"
 TRADINGVIEW_SEARCH_URL = "https://symbol-search.tradingview.com/symbol_search/v3/"
 AUTH_TOKEN = "unauthorized_user_token"
 CONNECT_TIMEOUT_SECONDS = 4
-READ_TIMEOUT_SECONDS = 3
-STRATEGY_TIMEOUT_SECONDS = 7
-PROBE_TIMEOUT_SECONDS = 10
-SEARCH_TIMEOUT_SECONDS = 8
-MAX_READ_MESSAGES = 12
+READ_TIMEOUT_SECONDS = 2
+STRATEGY_TIMEOUT_SECONDS = 4
+PROBE_TIMEOUT_SECONDS = 6
+SEARCH_TIMEOUT_SECONDS = 5
+MAX_READ_MESSAGES = 8
 
 TV_EXCHANGE_NAMES = {
     "BINANCE": "Binance",
@@ -117,11 +117,18 @@ class TradingViewClient:
         return await self.fetch_candles(market, interval="60", limit=limit)
 
     async def find_earliest_history_candle(self, market: MarketSymbol) -> Candle | None:
+        results = await asyncio.gather(
+            *[
+                self.fetch_candles(market, interval=interval, limit=5000)
+                for interval in ("1M", "1W", "1D")
+            ],
+            return_exceptions=True,
+        )
         candidates: list[Candle] = []
-        for interval in ("1M", "1W", "1D"):
-            candles = await self.fetch_candles(market, interval=interval, limit=5000)
-            if candles:
-                candidates.append(min(candles, key=lambda candle: candle.timestamp))
+        for candles in results:
+            if isinstance(candles, Exception) or not candles:
+                continue
+            candidates.append(min(candles, key=lambda candle: candle.timestamp))
         if not candidates:
             return None
         return min(candidates, key=lambda candle: candle.timestamp)
@@ -444,7 +451,23 @@ def _market_sort_key(market: MarketSymbol) -> tuple[int, int, str]:
     return (quote_priority, exchange_priority, market.tradingview_symbol)
 
 
-_TV_DIRECT_EXCHANGES = tuple(TV_EXCHANGE_NAMES)
+_TV_DIRECT_EXCHANGES = (
+    "BINANCE",
+    "COINBASE",
+    "KRAKEN",
+    "BITSTAMP",
+    "BITFINEX",
+    "OKX",
+    "BYBIT",
+    "BITGET",
+    "MEXC",
+    "GATEIO",
+    "KUCOIN",
+    "CRYPTOCOM",
+    "GEMINI",
+    "HTX",
+    "WHITEBIT",
+)
 
 
 _ASSET_ALIAS_GROUPS = (

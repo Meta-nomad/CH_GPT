@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta, timezone
 
-from app.core.analyzer import ChartAnalyzer, normalize_asset
+from app.core.analyzer import ChartAnalyzer, MAX_SCORE_MARKETS, _select_score_candidates, normalize_asset
 from app.core.models import Candle, MarketSymbol, Quote
 from app.providers.base import ExchangeProvider
 
@@ -183,4 +183,31 @@ async def test_cache_key_uses_current_version() -> None:
     await analyzer.analyze("SUI")
 
     assert cache.key is not None
-    assert cache.key.startswith("tv-clean-v13:SUI")
+    assert cache.key.startswith("tv-fast-candidates-v23:SUI")
+
+
+def test_score_candidate_selection_limits_direct_markets_but_keeps_usd_history_venues() -> None:
+    exchanges = [
+        "BINANCE",
+        "COINBASE",
+        "KRAKEN",
+        "BITSTAMP",
+        "BITFINEX",
+        "OKX",
+        "BYBIT",
+        "BITGET",
+        "MEXC",
+        "GATEIO",
+        "KUCOIN",
+        "CRYPTOCOM",
+        "GEMINI",
+        "HTX",
+        "WHITEBIT",
+    ]
+    markets = [market(exchange, quote, "BTC") for exchange in exchanges for quote in (Quote.USDT, Quote.USD)]
+
+    selected = _select_score_candidates(markets)
+
+    assert len(selected) == MAX_SCORE_MARKETS
+    assert market("COINBASE", Quote.USD, "BTC") in selected
+    assert market("KRAKEN", Quote.USD, "BTC") in selected
