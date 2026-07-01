@@ -13,7 +13,7 @@ MEXC_CONTRACT_DETAIL_URL = "https://contract.mexc.com/api/v1/contract/detail"
 MEXC_CONTRACT_TICKER_URL = "https://contract.mexc.com/api/v1/contract/ticker"
 MEXC_CONTRACT_DEPTH_URL = "https://contract.mexc.com/api/v1/contract/depth"
 REQUEST_TIMEOUT_SECONDS = 3
-MEXC_FUTURES_CACHE_VERSION = "mexc-systemic-v3"
+MEXC_FUTURES_CACHE_VERSION = "mexc-live-contract-v4"
 MEXC_FUTURES_CACHE_TTL_SECONDS = 300
 ACTIVE_STATES = {0, "0"}
 INACTIVE_STATE_TEXT = {"offline", "disabled", "delisted", "closed", "suspended"}
@@ -47,16 +47,10 @@ class MexcFuturesChecker:
         )
         ccxt_info = _source_result("ccxt", ccxt_result)
         api_info = _source_result("contract_api", api_result)
-        ccxt_checked = bool(ccxt_info["checked"])
         api_checked = bool(api_info["checked"])
-        if ccxt_checked:
-            available = bool(ccxt_info["ok"])
-            checked = True
-            decision_source = "ccxt_swap_markets"
-        else:
-            available = bool(api_info["ok"])
-            checked = api_checked
-            decision_source = "contract_api_fallback" if api_checked else "unavailable"
+        available = bool(api_info["ok"])
+        checked = api_checked
+        decision_source = "contract_api_live" if api_checked else "unavailable"
         data = {
             "symbol": symbol,
             "available": available,
@@ -198,16 +192,7 @@ def _ccxt_market_matches(market_id: str, market: dict[str, Any], symbol: str, ba
     }
     if market_base == base and (symbol in candidates or f"{base}_USDT" in candidates):
         return True
-    return _is_safe_prefixed_contract(base, market_base, candidates)
-
-
-def _is_safe_prefixed_contract(base: str, market_base: str, candidates: set[str]) -> bool:
-    if len(base) < 4:
-        return False
-    if not market_base.startswith(base):
-        return False
-    expected_prefix = f"{base}"
-    return any(candidate.startswith(expected_prefix) and candidate.endswith("_USDT") for candidate in candidates)
+    return False
 
 
 def _ccxt_market_label(market_id: str, market: dict[str, Any]) -> str:
@@ -235,23 +220,12 @@ def _extract_data_list(payload: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _find_matching_contract(contracts: list[dict[str, Any]], expected_symbol: str) -> dict[str, Any] | None:
-    expected_base = expected_symbol.removesuffix("_USDT")
-    exact_matches: list[dict[str, Any]] = []
-    prefixed_matches: list[dict[str, Any]] = []
     for contract in contracts:
         contract_symbol = _normalize_symbol(contract.get("symbol") or "")
         if not _is_active_usdt_contract(contract, contract_symbol):
             continue
         if contract_symbol == expected_symbol:
-            exact_matches.append(contract)
-            continue
-        contract_base = contract_symbol.removesuffix("_USDT")
-        if _is_safe_prefixed_contract(expected_base, contract_base, {contract_symbol}):
-            prefixed_matches.append(contract)
-    if exact_matches:
-        return exact_matches[0]
-    if prefixed_matches:
-        return prefixed_matches[0]
+            return contract
     return None
 
 
