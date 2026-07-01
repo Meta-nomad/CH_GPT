@@ -12,8 +12,8 @@ import ccxt.async_support as ccxt
 MEXC_CONTRACT_DETAIL_URL = "https://contract.mexc.com/api/v1/contract/detail"
 MEXC_CONTRACT_TICKER_URL = "https://contract.mexc.com/api/v1/contract/ticker"
 MEXC_CONTRACT_DEPTH_URL = "https://contract.mexc.com/api/v1/contract/depth"
-REQUEST_TIMEOUT_SECONDS = 8
-MEXC_FUTURES_CACHE_VERSION = "mexc-systemic-v2"
+REQUEST_TIMEOUT_SECONDS = 3
+MEXC_FUTURES_CACHE_VERSION = "mexc-systemic-v3"
 MEXC_FUTURES_CACHE_TTL_SECONDS = 300
 ACTIVE_STATES = {0, "0"}
 INACTIVE_STATE_TEXT = {"offline", "disabled", "delisted", "closed", "suspended"}
@@ -102,15 +102,24 @@ def _cache_entry_valid(entry: dict[str, Any] | None) -> bool:
 
 def _check_contract_api_sync(symbol: str) -> dict[str, Any]:
     detail_payload = _safe_request_json(f"{MEXC_CONTRACT_DETAIL_URL}?{urlencode({'symbol': symbol})}")
-    ticker_payload = _safe_request_json(f"{MEXC_CONTRACT_TICKER_URL}?{urlencode({'symbol': symbol})}")
-    depth_payload = _safe_request_json(f"{MEXC_CONTRACT_DEPTH_URL}/{quote(symbol)}")
-
     contract = _extract_data_object(detail_payload)
-    ticker = _extract_data_object(ticker_payload)
-    depth = _extract_depth_object(depth_payload)
+    matched_symbol = symbol if contract is not None and _is_exact_active_usdt_contract(contract, symbol) else None
+    if matched_symbol is None:
+        detail_list_payload = _safe_request_json(MEXC_CONTRACT_DETAIL_URL)
+        contract = _find_matching_contract(_extract_data_list(detail_list_payload), symbol)
+        matched_symbol = None if contract is None else _normalize_symbol(contract.get("symbol") or "")
 
-    detail_ok = contract is not None and _is_exact_active_usdt_contract(contract, symbol)
-    ticker_ok = ticker is not None and _is_exact_symbol(ticker, symbol) and _has_real_price(ticker)
+    if matched_symbol:
+        ticker_payload = _safe_request_json(f"{MEXC_CONTRACT_TICKER_URL}?{urlencode({'symbol': matched_symbol})}")
+        depth_payload = _safe_request_json(f"{MEXC_CONTRACT_DEPTH_URL}/{quote(matched_symbol)}")
+        ticker = _extract_data_object(ticker_payload)
+        depth = _extract_depth_object(depth_payload)
+    else:
+        ticker = None
+        depth = None
+
+    detail_ok = contract is not None and matched_symbol is not None
+    ticker_ok = ticker is not None and _is_exact_symbol(ticker, matched_symbol or symbol) and _has_real_price(ticker)
     depth_ok = depth is not None and _has_order_book(depth)
 
     # A single endpoint can be stale, so contract API needs two positive signals.
@@ -121,6 +130,7 @@ def _check_contract_api_sync(symbol: str) -> dict[str, Any]:
         "ticker_ok": ticker_ok,
         "depth_ok": depth_ok,
         "detail_state": None if contract is None else contract.get("state"),
+        "detail_symbol": None if contract is None else contract.get("symbol"),
         "ticker_symbol": None if ticker is None else ticker.get("symbol"),
     }
 
@@ -172,8 +182,7 @@ def _source_result(prefix: str, value: Any) -> dict[str, Any]:
 
 
 def _ccxt_market_matches(market_id: str, market: dict[str, Any], symbol: str, base: str) -> bool:
-    if str(market.get("base") or "").upper() != base:
-        return False
+    market_base = _normalize_base(market.get("base") or "")
     quote = str(market.get("quote") or market.get("settle") or "").upper()
     settle = str(market.get("settle") or "").upper()
     if "USDT" not in {quote, settle}:
@@ -187,10 +196,18 @@ def _ccxt_market_matches(market_id: str, market: dict[str, Any], symbol: str, ba
         _normalize_symbol(market.get("id") or ""),
         _normalize_symbol(market.get("symbol") or ""),
     }
-    if symbol in candidates or f"{base}_USDT" in candidates:
+    if market_base == base and (symbol in candidates or f"{base}_USDT" in candidates):
         return True
-    # Some ccxt markets expose decorated ids, but exact base/USDT-settled contract is enough.
-    return True
+    return _is_safe_prefixed_contract(base, market_base, candidates)
+
+
+def _is_safe_prefixed_contract(base: str, market_base: str, candidates: set[str]) -> bool:
+    if len(base) < 4:
+        return False
+    if not market_base.startswith(base):
+        return False
+    expected_prefix = f"{base}"
+    return any(candidate.startswith(expected_prefix) and candidate.endswith("_USDT") for candidate in candidates)
 
 
 def _ccxt_market_label(market_id: str, market: dict[str, Any]) -> str:
@@ -205,6 +222,36 @@ def _extract_data_object(payload: dict[str, Any]) -> dict[str, Any] | None:
         return data
     if isinstance(data, list) and len(data) == 1 and isinstance(data[0], dict):
         return data[0]
+    return None
+
+
+def _extract_data_list(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    if not _response_success(payload):
+        return []
+    data = payload.get("data")
+    if not isinstance(data, list):
+        return []
+    return [item for item in data if isinstance(item, dict)]
+
+
+def _find_matching_contract(contracts: list[dict[str, Any]], expected_symbol: str) -> dict[str, Any] | None:
+    expected_base = expected_symbol.removesuffix("_USDT")
+    exact_matches: list[dict[str, Any]] = []
+    prefixed_matches: list[dict[str, Any]] = []
+    for contract in contracts:
+        contract_symbol = _normalize_symbol(contract.get("symbol") or "")
+        if not _is_active_usdt_contract(contract, contract_symbol):
+            continue
+        if contract_symbol == expected_symbol:
+            exact_matches.append(contract)
+            continue
+        contract_base = contract_symbol.removesuffix("_USDT")
+        if _is_safe_prefixed_contract(expected_base, contract_base, {contract_symbol}):
+            prefixed_matches.append(contract)
+    if exact_matches:
+        return exact_matches[0]
+    if prefixed_matches:
+        return prefixed_matches[0]
     return None
 
 
@@ -229,6 +276,12 @@ def _response_success(payload: dict[str, Any]) -> bool:
 
 def _is_exact_active_usdt_contract(contract: dict[str, Any], expected_symbol: str) -> bool:
     if not _is_exact_symbol(contract, expected_symbol):
+        return False
+    return _is_active_usdt_contract(contract, expected_symbol)
+
+
+def _is_active_usdt_contract(contract: dict[str, Any], expected_symbol: str) -> bool:
+    if not expected_symbol.endswith("_USDT"):
         return False
     quote_coin = str(contract.get("quoteCoin") or contract.get("quote") or "").upper()
     settle_coin = str(contract.get("settleCoin") or contract.get("settle") or "").upper()

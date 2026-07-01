@@ -2,6 +2,7 @@ from app.providers.mexc_futures import (
     _ccxt_market_matches,
     _extract_data_object,
     _extract_depth_object,
+    _find_matching_contract,
     _has_order_book,
     _is_exact_active_usdt_contract,
     _looks_disabled_or_hidden,
@@ -49,7 +50,7 @@ def test_ccxt_swap_market_requires_exact_symbol_and_contract() -> None:
     }
 
     assert _ccxt_market_matches("PUMP_USDT", market, "PUMP_USDT", "PUMP") is True
-    assert _ccxt_market_matches("PUMPFUN_USDT", {**market, "base": "PUMPFUN", "id": "PUMPFUN_USDT"}, "PUMP_USDT", "PUMP") is False
+    assert _ccxt_market_matches("PUMPFUN_USDT", {**market, "base": "PUMPFUN", "id": "PUMPFUN_USDT"}, "PUMP_USDT", "PUMP") is True
     assert _ccxt_market_matches("PUMP_USDT", {**market, "swap": False, "contract": False}, "PUMP_USDT", "PUMP") is False
 
 
@@ -57,3 +58,36 @@ def test_normalize_symbol_handles_ccxt_contract_formats() -> None:
     assert _normalize_symbol("PUMP/USDT:USDT") == "PUMP_USDT"
     assert _normalize_symbol("PUMP-USDT") == "PUMP_USDT"
     assert _normalize_symbol("PUMPUSDT") == "PUMP_USDT"
+
+
+def test_ccxt_prefixed_fallback_ignores_short_base() -> None:
+    market = {
+        "base": "MANTA",
+        "quote": "USDT",
+        "settle": "USDT",
+        "active": True,
+        "swap": True,
+        "contract": True,
+        "id": "MANTA_USDT",
+        "symbol": "MANTA/USDT:USDT",
+    }
+
+    assert _ccxt_market_matches("MANTA_USDT", market, "M_USDT", "M") is False
+
+
+def test_contract_list_finds_safe_prefixed_derivative_contract() -> None:
+    contracts = [
+        {"symbol": "PUMPFUN_USDT", "quoteCoin": "USDT", "settleCoin": "USDT", "state": 0},
+        {"symbol": "PUMPBTC_USDT", "quoteCoin": "BTC", "settleCoin": "USDT", "state": 0},
+    ]
+
+    assert _find_matching_contract(contracts, "PUMP_USDT") == contracts[0]
+
+
+def test_contract_list_prefers_exact_symbol() -> None:
+    contracts = [
+        {"symbol": "PUMPFUN_USDT", "quoteCoin": "USDT", "settleCoin": "USDT", "state": 0},
+        {"symbol": "PUMP_USDT", "quoteCoin": "USDT", "settleCoin": "USDT", "state": 0},
+    ]
+
+    assert _find_matching_contract(contracts, "PUMP_USDT") == contracts[1]
