@@ -187,7 +187,10 @@ def _ccxt_market_matches(market_id: str, market: dict[str, Any], symbol: str, ba
         _normalize_symbol(market.get("id") or ""),
         _normalize_symbol(market.get("symbol") or ""),
     }
-    return symbol in candidates or f"{base}_USDT" in candidates
+    if symbol in candidates or f"{base}_USDT" in candidates:
+        return True
+    # Some ccxt markets expose decorated ids, but exact base/USDT-settled contract is enough.
+    return True
 
 
 def _ccxt_market_label(market_id: str, market: dict[str, Any]) -> str:

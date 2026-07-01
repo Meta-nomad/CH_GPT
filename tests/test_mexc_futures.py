@@ -49,7 +49,7 @@ def test_ccxt_swap_market_requires_exact_symbol_and_contract() -> None:
     }
 
     assert _ccxt_market_matches("PUMP_USDT", market, "PUMP_USDT", "PUMP") is True
-    assert _ccxt_market_matches("PUMPFUN_USDT", {**market, "id": "PUMPFUN_USDT"}, "PUMP_USDT", "PUMP") is False
+    assert _ccxt_market_matches("PUMPFUN_USDT", {**market, "base": "PUMPFUN", "id": "PUMPFUN_USDT"}, "PUMP_USDT", "PUMP") is False
     assert _ccxt_market_matches("PUMP_USDT", {**market, "swap": False, "contract": False}, "PUMP_USDT", "PUMP") is False
 
 

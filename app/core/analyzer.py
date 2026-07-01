@@ -9,7 +9,7 @@ from app.providers.base import ExchangeProvider, ProviderError
 from app.storage.cache import AnalysisCache
 
 logger = logging.getLogger(__name__)
-CACHE_VERSION = "tv-mexc-cache-v19"
+CACHE_VERSION = "tv-fast-mexc-v20"
 
 QUALITY_GAP_LIMIT = 0.05
 QUALITY_FLAT_LIMIT = 0.05
@@ -19,6 +19,7 @@ SCORE_TIMEOUT_SECONDS = 35
 MARKET_SEARCH_TIMEOUT_SECONDS = 12
 TV_PROBE_TIMEOUT_SECONDS = 12
 MEXC_USDT_POLICY_YEAR = 2015
+MEXC_FAST_CHECK_TIMEOUT_SECONDS = 3
 
 
 class ChartAnalyzer:
@@ -221,7 +222,10 @@ class ChartAnalyzer:
         if has_market is None:
             return None
         try:
-            return await has_market(asset)
+            return await asyncio.wait_for(has_market(asset), timeout=MEXC_FAST_CHECK_TIMEOUT_SECONDS)
+        except TimeoutError:
+            logger.warning("MEXC futures check timed out for %s", asset)
+            return None
         except Exception as exc:
             logger.warning("MEXC futures check failed for %s: %s", asset, exc)
             return None
