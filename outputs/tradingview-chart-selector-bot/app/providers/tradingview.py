@@ -72,12 +72,25 @@ class TradingViewProbe:
 
 class TradingViewClient:
     async def search_markets(self, base: str, *, quotes: list[Quote]) -> list[MarketSymbol]:
-        symbols = await asyncio.wait_for(
-            asyncio.to_thread(_search_symbols_sync, base),
-            timeout=SEARCH_TIMEOUT_SECONDS,
+        base_variants = _asset_variants(base)
+        search_terms = _search_terms(base_variants, quotes)
+        symbol_batches = await asyncio.gather(
+            *[
+                asyncio.wait_for(
+                    asyncio.to_thread(_search_symbols_sync, term),
+                    timeout=SEARCH_TIMEOUT_SECONDS,
+                )
+                for term in search_terms
+            ],
+            return_exceptions=True,
         )
-        found = _symbols_to_markets(symbols, base=base, quotes=quotes)
-        direct = _direct_crypto_markets(base, quotes=quotes)
+        symbols: list[dict[str, Any]] = []
+        for batch in symbol_batches:
+            if isinstance(batch, Exception):
+                continue
+            symbols.extend(batch)
+        found = _symbols_to_markets(symbols, base=base, base_variants=base_variants, quotes=quotes)
+        direct = _direct_crypto_markets(base, base_variants=base_variants, quotes=quotes)
         return _merge_markets([*found, *direct])
 
     async def fetch_hourly_candles(self, market: MarketSymbol, *, limit: int) -> list[Candle]:
@@ -250,21 +263,28 @@ def _search_symbols_sync(base: str) -> list[dict[str, Any]]:
     return data if isinstance(data, list) else []
 
 
-def _direct_crypto_markets(base: str, *, quotes: list[Quote]) -> list[MarketSymbol]:
-    wanted_base = base.upper()
+def _direct_crypto_markets(
+    base: str,
+    *,
+    base_variants: list[str] | None = None,
+    quotes: list[Quote],
+) -> list[MarketSymbol]:
+    wanted_base = _clean_asset(base)
+    variants = base_variants or [wanted_base]
     markets: list[MarketSymbol] = []
     for exchange in _TV_DIRECT_EXCHANGES:
-        for quote in quotes:
-            markets.append(
-                MarketSymbol(
-                    exchange_id=TV_EXCHANGE_ID.get(exchange, exchange.lower()),
-                    exchange_name=TV_EXCHANGE_NAMES[exchange],
-                    base=wanted_base,
-                    quote=quote,
-                    market_symbol=f"{wanted_base}/{quote.value}",
-                    tradingview_exchange=exchange,
+        for variant in variants:
+            for quote in quotes:
+                markets.append(
+                    MarketSymbol(
+                        exchange_id=TV_EXCHANGE_ID.get(exchange, exchange.lower()),
+                        exchange_name=TV_EXCHANGE_NAMES[exchange],
+                        base=wanted_base,
+                        quote=quote,
+                        market_symbol=f"{variant}/{quote.value}",
+                        tradingview_exchange=exchange,
+                    )
                 )
-            )
     return markets
 
 
@@ -280,9 +300,22 @@ def _merge_markets(markets: list[MarketSymbol]) -> list[MarketSymbol]:
     return sorted(merged, key=_market_sort_key)
 
 
-def _symbols_to_markets(symbols: list[dict[str, Any]], *, base: str, quotes: list[Quote]) -> list[MarketSymbol]:
-    wanted_base = base.upper()
+def _symbols_to_markets(
+    symbols: list[dict[str, Any]],
+    *,
+    base: str,
+    base_variants: list[str] | None = None,
+    quotes: list[Quote],
+) -> list[MarketSymbol]:
+    wanted_base = _clean_asset(base)
+    wanted_bases = set(base_variants or [wanted_base])
     wanted_quotes = {quote.value for quote in quotes}
+    quote_aliases = _quote_aliases(quotes)
+    wanted_tickers = {
+        f"{variant}{quote_alias}"
+        for variant in wanted_bases
+        for quote_alias in quote_aliases
+    }
     seen: set[str] = set()
     markets: list[MarketSymbol] = []
     for item in symbols:
@@ -296,7 +329,7 @@ def _symbols_to_markets(symbols: list[dict[str, Any]], *, base: str, quotes: lis
         if quote is None:
             continue
         symbol_base = _detect_base(item, symbol, quote.value)
-        if symbol_base != wanted_base:
+        if symbol_base not in wanted_bases and symbol not in wanted_tickers:
             continue
         key = f"{exchange}:{symbol}"
         if key in seen:
@@ -326,18 +359,26 @@ def _clean_symbol(item: dict[str, Any]) -> str:
 
 
 def _detect_quote(item: dict[str, Any], symbol: str, wanted_quotes: set[str]) -> Quote | None:
+    quote_aliases = _quote_aliases([Quote(value) for value in wanted_quotes])
     candidates = [
         item.get("currency_code"),
         item.get("currency"),
         item.get("quote_currency"),
+        item.get("description"),
+        item.get("short_description"),
+        item.get("full_name"),
     ]
     for candidate in candidates:
-        value = str(candidate or "").upper()
-        if value in wanted_quotes:
-            return Quote(value)
-    for quote in sorted(wanted_quotes, key=len, reverse=True):
-        if symbol.endswith(quote):
-            return Quote(quote)
+        value = _clean_asset(str(candidate or ""))
+        quote = quote_aliases.get(value)
+        if quote is not None:
+            return quote
+        for alias, quote in quote_aliases.items():
+            if value.endswith(alias):
+                return quote
+    for alias, quote in sorted(quote_aliases.items(), key=lambda item: len(item[0]), reverse=True):
+        if symbol.endswith(alias):
+            return quote
     return None
 
 
@@ -358,6 +399,66 @@ def _market_sort_key(market: MarketSymbol) -> tuple[int, int, str]:
     quote_priority = 0 if market.quote is Quote.USDT else 1
     exchange_priority = _TV_EXCHANGE_PRIORITY.get(market.tradingview_exchange, 99)
     return (quote_priority, exchange_priority, market.tradingview_symbol)
+
+
+_TV_DIRECT_EXCHANGES = tuple(TV_EXCHANGE_NAMES)
+
+
+_ASSET_ALIAS_GROUPS = (
+    ("RENDER", "RNDR"),
+    ("POL", "MATIC"),
+    ("KAIA", "KLAY"),
+    ("BEAM", "BEAMX"),
+    ("G", "GAL"),
+    ("XNO", "NANO"),
+    ("BTT", "BTTOLD"),
+    ("LUNC", "LUNA"),
+)
+
+
+def _clean_asset(value: str) -> str:
+    return re.sub(r"[^A-Z0-9]", "", value.upper())
+
+
+def _asset_variants(base: str) -> list[str]:
+    cleaned = _clean_asset(base)
+    variants = [cleaned]
+    for group in _ASSET_ALIAS_GROUPS:
+        if cleaned in group:
+            variants.extend(alias for alias in group if alias != cleaned)
+            break
+    return list(dict.fromkeys(variants))
+
+
+def _search_terms(base_variants: list[str], quotes: list[Quote]) -> list[str]:
+    terms = list(base_variants)
+    terms.extend(f"{variant}{quote.value}" for variant in base_variants for quote in quotes)
+    return list(dict.fromkeys(terms))
+
+
+_QUOTE_ALIAS_GROUPS = {
+    Quote.USDT: (
+        "USDT",
+        "TETHERUS",
+        "TETHERUSDT",
+        "TETHERUSD",
+        "TETHER",
+    ),
+    Quote.USD: (
+        "USD",
+        "USDOLLAR",
+        "US DOLLAR",
+        "DOLLAR",
+    ),
+}
+
+
+def _quote_aliases(quotes: list[Quote]) -> dict[str, Quote]:
+    aliases: dict[str, Quote] = {}
+    for quote in quotes:
+        for alias in _QUOTE_ALIAS_GROUPS.get(quote, (quote.value,)):
+            aliases[_clean_asset(alias)] = quote
+    return aliases
 
 
 _TV_EXCHANGE_PRIORITY = {

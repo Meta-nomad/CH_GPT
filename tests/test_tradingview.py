@@ -148,3 +148,46 @@ def test_direct_crypto_markets_include_short_gate_token_symbol() -> None:
     symbols = {market.tradingview_symbol for market in markets}
 
     assert "GATEIO:GTUSDT" in symbols
+
+
+def test_asset_aliases_include_render_rndr() -> None:
+    assert _asset_variants("RENDER") == ["RENDER", "RNDR"]
+    assert _asset_variants("RNDR") == ["RNDR", "RENDER"]
+
+
+def test_quote_aliases_include_tether_names() -> None:
+    aliases = _quote_aliases([Quote.USDT, Quote.USD])
+
+    assert aliases["USDT"] is Quote.USDT
+    assert aliases["TETHERUS"] is Quote.USDT
+    assert aliases["TETHERUSD"] is Quote.USDT
+    assert aliases["USDOLLAR"] is Quote.USD
+
+
+def test_detect_quote_accepts_tetherus_description() -> None:
+    item = {"description": "Render / TetherUS", "currency_code": "TetherUS"}
+
+    assert _detect_quote(item, "RENDERUSDT", {"USDT", "USD"}) is Quote.USDT
+
+
+def test_symbol_search_accepts_alias_full_ticker() -> None:
+    symbols = [
+        {
+            "exchange": "BINANCE",
+            "symbol": "RNDRUSDT",
+            "description": "Render Token / TetherUS",
+            "currency_code": "TetherUS",
+        }
+    ]
+
+    markets = _symbols_to_markets(
+        symbols,
+        base="RENDER",
+        base_variants=["RENDER", "RNDR"],
+        quotes=[Quote.USDT, Quote.USD],
+    )
+
+    assert len(markets) == 1
+    assert markets[0].tradingview_symbol == "BINANCE:RNDRUSDT"
+    assert markets[0].base == "RENDER"
+    assert markets[0].quote is Quote.USDT

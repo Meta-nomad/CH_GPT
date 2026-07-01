@@ -9,7 +9,7 @@ from app.providers.base import ExchangeProvider, ProviderError
 from app.storage.cache import AnalysisCache
 
 logger = logging.getLogger(__name__)
-CACHE_VERSION = "tv-clean-v10"
+CACHE_VERSION = "tv-aliases-v14"
 
 QUALITY_GAP_LIMIT = 0.05
 QUALITY_FLAT_LIMIT = 0.05

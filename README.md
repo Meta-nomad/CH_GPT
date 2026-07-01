@@ -68,3 +68,20 @@ python tools/tv_probe.py BITGET:KAIAUSDT MEXC:KAIAUSDT OKX:KAIAUSDT --interval 1
 ```
 
 Если внешний источник недоступен, бот должен вернуть `не удалось проверить`, а не ложное `Да`.
+
+## Алиасы тикеров и котировок
+
+Бот учитывает переименования и разные формы записи котировки:
+
+- `RENDER` / `RNDR`.
+- `POL` / `MATIC`.
+- `KAIA` / `KLAY`.
+- `BEAM` / `BEAMX`.
+- `G` / `GAL`.
+- `XNO` / `NANO`.
+- `BTT` / `BTTOLD`.
+- `LUNC` / `LUNA`.
+- `USDT` = `TetherUS` = `Tether US` = `Tether USD` = `Tether`.
+- `USD` = `US Dollar` = `Dollar`.
+
+Для таких случаев бот ищет не только `BASE`, но и полные варианты `BASEUSDT`, `BASEUSD`, а также варианты старого тикера, например `RNDRUSDT` для `RENDER`.
