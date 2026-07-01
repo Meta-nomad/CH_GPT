@@ -34,7 +34,6 @@ def test_mexc_known_api_ui_false_positives_are_blocked() -> None:
 
     assert "MAGMA_USDT" in symbols
     assert "MORPHO_USDT" in symbols
-    assert "M_USDT" in symbols
 
 
 def test_mexc_hidden_flags_are_rejected() -> None:

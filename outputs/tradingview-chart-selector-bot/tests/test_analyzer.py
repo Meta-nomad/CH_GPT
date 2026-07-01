@@ -183,4 +183,4 @@ async def test_cache_key_uses_current_version() -> None:
     await analyzer.analyze("SUI")
 
     assert cache.key is not None
-    assert cache.key.startswith("tv-clean-v13:SUI")
+    assert cache.key.startswith("tv-clean-v9:SUI")

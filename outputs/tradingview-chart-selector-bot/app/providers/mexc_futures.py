@@ -13,7 +13,7 @@ MEXC_CONTRACT_DEPTH_URL = "https://contract.mexc.com/api/v1/contract/depth"
 REQUEST_TIMEOUT_SECONDS = 8
 ACTIVE_STATES = {0, "0"}
 INACTIVE_STATE_TEXT = {"offline", "disabled", "delisted", "closed", "suspended"}
-DEFAULT_FALSE_POSITIVE_SYMBOLS = {"MAGMA_USDT", "MORPHO_USDT", "M_USDT"}
+DEFAULT_FALSE_POSITIVE_SYMBOLS = {"MAGMA_USDT", "MORPHO_USDT"}
 
 
 class MexcFuturesChecker:
