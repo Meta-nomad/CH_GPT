@@ -9,7 +9,7 @@ from app.providers.base import ExchangeProvider, ProviderError
 from app.storage.cache import AnalysisCache
 
 logger = logging.getLogger(__name__)
-CACHE_VERSION = "tv-aliases-v14"
+CACHE_VERSION = "tv-mexc-systemic-v18"
 
 QUALITY_GAP_LIMIT = 0.05
 QUALITY_FLAT_LIMIT = 0.05
@@ -241,7 +241,7 @@ def _rank_key(
     item: ChartScore,
     *,
     prefer_usdt: bool,
-) -> tuple[int, int, int, int, float, float, float, float, float, int, float]:
+) -> tuple[int, int, int, int, int, float, float, float, float, float, int, float]:
     metrics = item.metrics
     expected = max(metrics.actual_candles + metrics.gap_count, 1)
     gap_ratio = metrics.gap_count / expected
@@ -253,6 +253,7 @@ def _rank_key(
         is_usable,
         quote_policy_priority,
         history_months,
+        item.symbol.match_priority,
         usdt_priority,
         item.score,
         metrics.average_volume,

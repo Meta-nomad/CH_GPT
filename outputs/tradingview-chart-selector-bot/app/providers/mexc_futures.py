@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 from typing import Any
 from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
+
+import ccxt.async_support as ccxt
 
 MEXC_CONTRACT_DETAIL_URL = "https://contract.mexc.com/api/v1/contract/detail"
 MEXC_CONTRACT_TICKER_URL = "https://contract.mexc.com/api/v1/contract/ticker"
@@ -13,87 +14,104 @@ MEXC_CONTRACT_DEPTH_URL = "https://contract.mexc.com/api/v1/contract/depth"
 REQUEST_TIMEOUT_SECONDS = 8
 ACTIVE_STATES = {0, "0"}
 INACTIVE_STATE_TEXT = {"offline", "disabled", "delisted", "closed", "suspended"}
-DEFAULT_FALSE_POSITIVE_SYMBOLS = {"MAGMA_USDT", "MORPHO_USDT", "M_USDT"}
 
 
 class MexcFuturesChecker:
     exchange_id = "mexc_futures"
 
     def __init__(self) -> None:
+        self.client = ccxt.mexc({"enableRateLimit": True, "options": {"defaultType": "swap"}})
         self._cache: dict[str, bool] = {}
+        self._markets: dict[str, Any] | None = None
 
     async def has_futures_market(self, base: str) -> bool | None:
-        normalized = _normalize_base(base)
-        if not normalized:
-            return False
-        symbol = f"{normalized}_USDT"
-        if symbol in _false_positive_symbols():
-            return False
-        if symbol not in self._cache:
-            self._cache[symbol] = await asyncio.wait_for(
-                asyncio.to_thread(_has_tradeable_contract_sync, symbol),
-                timeout=REQUEST_TIMEOUT_SECONDS * 3,
-            )
-        return self._cache[symbol]
+        diagnostic = await self.diagnostic(base)
+        if not diagnostic.get("checked", True):
+            return None
+        return bool(diagnostic.get("available"))
 
     async def diagnostic(self, base: str) -> dict[str, Any]:
         normalized = _normalize_base(base)
         symbol = f"{normalized}_USDT"
-        if symbol in _false_positive_symbols():
-            return {"symbol": symbol, "available": False, "reason": "manual_api_ui_mismatch"}
-        return await asyncio.wait_for(
-            asyncio.to_thread(_diagnose_contract_sync, symbol),
-            timeout=REQUEST_TIMEOUT_SECONDS * 3,
+        if symbol in self._cache:
+            return {"symbol": symbol, "available": self._cache[symbol], "reason": "cache"}
+
+        ccxt_result, api_result = await asyncio.gather(
+            self._check_ccxt_swap(symbol, normalized),
+            asyncio.to_thread(_check_contract_api_sync, symbol),
+            return_exceptions=True,
         )
+        ccxt_info = _source_result("ccxt", ccxt_result)
+        api_info = _source_result("contract_api", api_result)
+        ccxt_checked = bool(ccxt_info["checked"])
+        api_checked = bool(api_info["checked"])
+        if ccxt_checked:
+            available = bool(ccxt_info["ok"])
+            checked = True
+            decision_source = "ccxt_swap_markets"
+        else:
+            available = bool(api_info["ok"])
+            checked = api_checked
+            decision_source = "contract_api_fallback" if api_checked else "unavailable"
+        if checked:
+            self._cache[symbol] = available
+        return {
+            "symbol": symbol,
+            "available": available,
+            "checked": checked,
+            "decision_source": decision_source,
+            **{key: value for key, value in ccxt_info.items() if key not in {"checked", "ok"}},
+            **{key: value for key, value in api_info.items() if key not in {"checked", "ok"}},
+        }
 
     async def close(self) -> None:
-        return None
+        await self.client.close()
+
+    async def _check_ccxt_swap(self, symbol: str, base: str) -> dict[str, Any]:
+        markets = await self._load_markets()
+        matches = []
+        for market_id, market in markets.items():
+            if not _ccxt_market_matches(market_id, market, symbol, base):
+                continue
+            matches.append(_ccxt_market_label(market_id, market))
+        return {"checked": True, "ok": bool(matches), "matches": matches[:5]}
+
+    async def _load_markets(self) -> dict[str, Any]:
+        if self._markets is None:
+            self._markets = await self.client.load_markets()
+        return self._markets
 
 
-def _has_tradeable_contract_sync(symbol: str) -> bool:
-    detail_payload = _request_json(f"{MEXC_CONTRACT_DETAIL_URL}?{urlencode({'symbol': symbol})}")
+def _check_contract_api_sync(symbol: str) -> dict[str, Any]:
+    detail_payload = _safe_request_json(f"{MEXC_CONTRACT_DETAIL_URL}?{urlencode({'symbol': symbol})}")
+    ticker_payload = _safe_request_json(f"{MEXC_CONTRACT_TICKER_URL}?{urlencode({'symbol': symbol})}")
+    depth_payload = _safe_request_json(f"{MEXC_CONTRACT_DEPTH_URL}/{quote(symbol)}")
+
     contract = _extract_data_object(detail_payload)
-    if contract is None or not _is_exact_active_usdt_contract(contract, symbol):
-        return False
-
-    ticker_payload = _request_json(f"{MEXC_CONTRACT_TICKER_URL}?{urlencode({'symbol': symbol})}")
     ticker = _extract_data_object(ticker_payload)
-    if ticker is None or not _is_exact_symbol(ticker, symbol) or not _has_real_price(ticker):
-        return False
-
-    depth_payload = _request_json(f"{MEXC_CONTRACT_DEPTH_URL}/{quote(symbol)}")
     depth = _extract_depth_object(depth_payload)
-    return depth is not None and _has_order_book(depth)
 
+    detail_ok = contract is not None and _is_exact_active_usdt_contract(contract, symbol)
+    ticker_ok = ticker is not None and _is_exact_symbol(ticker, symbol) and _has_real_price(ticker)
+    depth_ok = depth is not None and _has_order_book(depth)
 
-def _diagnose_contract_sync(symbol: str) -> dict[str, Any]:
-    detail_payload = _request_json(f"{MEXC_CONTRACT_DETAIL_URL}?{urlencode({'symbol': symbol})}")
-    contract = _extract_data_object(detail_payload)
-    ticker_payload = _request_json(f"{MEXC_CONTRACT_TICKER_URL}?{urlencode({'symbol': symbol})}")
-    ticker = _extract_data_object(ticker_payload)
-    depth_payload = _request_json(f"{MEXC_CONTRACT_DEPTH_URL}/{quote(symbol)}")
-    depth = _extract_depth_object(depth_payload)
-    available = (
-        contract is not None
-        and _is_exact_active_usdt_contract(contract, symbol)
-        and ticker is not None
-        and _is_exact_symbol(ticker, symbol)
-        and _has_real_price(ticker)
-        and depth is not None
-        and _has_order_book(depth)
-    )
+    # A single endpoint can be stale, so contract API needs two positive signals.
     return {
-        "symbol": symbol,
-        "available": available,
-        "detail_success": _response_success(detail_payload),
+        "checked": True,
+        "ok": bool((detail_ok and ticker_ok) or (ticker_ok and depth_ok) or (detail_ok and depth_ok)),
+        "detail_ok": detail_ok,
+        "ticker_ok": ticker_ok,
+        "depth_ok": depth_ok,
         "detail_state": None if contract is None else contract.get("state"),
-        "detail_hidden": None if contract is None else _looks_disabled_or_hidden(contract),
-        "ticker_success": _response_success(ticker_payload),
         "ticker_symbol": None if ticker is None else ticker.get("symbol"),
-        "has_price": False if ticker is None else _has_real_price(ticker),
-        "depth_success": _response_success(depth_payload),
-        "has_book": False if depth is None else _has_order_book(depth),
     }
+
+
+def _safe_request_json(url: str) -> dict[str, Any]:
+    try:
+        return _request_json(url)
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}
 
 
 def _request_json(url: str) -> dict[str, Any]:
@@ -110,6 +128,52 @@ def _request_json(url: str) -> dict[str, Any]:
     with urlopen(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:
         payload = json.loads(response.read().decode("utf-8"))
     return payload if isinstance(payload, dict) else {}
+
+
+def _source_result(prefix: str, value: Any) -> dict[str, Any]:
+    if isinstance(value, Exception):
+        return {
+            f"{prefix}_checked": False,
+            f"{prefix}_ok": False,
+            f"{prefix}_error": str(value),
+            "checked": False,
+            "ok": False,
+        }
+    if not isinstance(value, dict):
+        return {f"{prefix}_checked": False, f"{prefix}_ok": False, "checked": False, "ok": False}
+    result = {
+        f"{prefix}_{key}": item
+        for key, item in value.items()
+        if key not in {"checked", "ok"}
+    }
+    result[f"{prefix}_checked"] = bool(value.get("checked"))
+    result[f"{prefix}_ok"] = bool(value.get("ok"))
+    result["checked"] = bool(value.get("checked"))
+    result["ok"] = bool(value.get("ok"))
+    return result
+
+
+def _ccxt_market_matches(market_id: str, market: dict[str, Any], symbol: str, base: str) -> bool:
+    if str(market.get("base") or "").upper() != base:
+        return False
+    quote = str(market.get("quote") or market.get("settle") or "").upper()
+    settle = str(market.get("settle") or "").upper()
+    if "USDT" not in {quote, settle}:
+        return False
+    if market.get("active") is False:
+        return False
+    if not (market.get("swap") or market.get("future") or market.get("contract")):
+        return False
+    candidates = {
+        _normalize_symbol(market_id),
+        _normalize_symbol(market.get("id") or ""),
+        _normalize_symbol(market.get("symbol") or ""),
+    }
+    return symbol in candidates or f"{base}_USDT" in candidates
+
+
+def _ccxt_market_label(market_id: str, market: dict[str, Any]) -> str:
+    return str(market.get("symbol") or market.get("id") or market_id)
 
 
 def _extract_data_object(payload: dict[str, Any]) -> dict[str, Any] | None:
@@ -185,15 +249,11 @@ def _looks_disabled_or_hidden(data: dict[str, Any]) -> bool:
     return False
 
 
-def _false_positive_symbols() -> set[str]:
-    raw = os.getenv("MEXC_FUTURES_FALSE_POSITIVES", "")
-    configured = {_normalize_symbol(item) for item in raw.split(",") if item.strip()}
-    return DEFAULT_FALSE_POSITIVE_SYMBOLS | configured
-
-
 def _normalize_symbol(value: Any) -> str:
-    cleaned = str(value).upper().strip().replace("-", "_").replace("/", "_")
+    cleaned = str(value).upper().strip().replace("-", "_").replace("/", "_").replace(":", "_")
     cleaned = "".join(ch for ch in cleaned if ch.isalnum() or ch == "_")
+    if cleaned.endswith("_USDT_USDT"):
+        cleaned = cleaned[: -10] + "_USDT"
     if "_" not in cleaned and cleaned.endswith("USDT"):
         cleaned = f"{cleaned[:-4]}_USDT"
     return cleaned

@@ -191,3 +191,29 @@ def test_symbol_search_accepts_alias_full_ticker() -> None:
     assert markets[0].tradingview_symbol == "BINANCE:RNDRUSDT"
     assert markets[0].base == "RENDER"
     assert markets[0].quote is Quote.USDT
+
+
+def test_descriptive_pinyin_symbol_is_rejected_even_when_metadata_matches() -> None:
+    symbols = [
+        {
+            "exchange": "BINANCE",
+            "symbol": "BIANRENSHENGUSDT",
+            "base_currency_code": "BIAO",
+            "currency_code": "USDT",
+        },
+        {
+            "exchange": "GATEIO",
+            "symbol": "BIAOUSDT",
+            "currency_code": "USDT",
+        },
+    ]
+
+    markets = _symbols_to_markets(
+        symbols,
+        base="BIAO",
+        base_variants=["BIAO"],
+        quotes=[Quote.USDT, Quote.USD],
+    )
+
+    assert [market.tradingview_symbol for market in markets] == ["GATEIO:BIAOUSDT"]
+    assert markets[0].match_priority == 3

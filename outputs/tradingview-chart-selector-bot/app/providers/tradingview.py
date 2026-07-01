@@ -40,6 +40,16 @@ TV_EXCHANGE_NAMES = {
     "BITGET": "Bitget",
     "CRYPTOCOM": "Crypto.com",
     "GEMINI": "Gemini",
+    "HTX": "HTX",
+    "BINGX": "BingX",
+    "LBANK": "LBank",
+    "BITMART": "BitMart",
+    "POLONIEX": "Poloniex",
+    "COINEX": "CoinEx",
+    "ASCENDEX": "AscendEX",
+    "PHEMEX": "Phemex",
+    "WHITEBIT": "WhiteBIT",
+    "BLOFIN": "BloFin",
 }
 
 TV_EXCHANGE_ID = {
@@ -56,6 +66,16 @@ TV_EXCHANGE_ID = {
     "BITGET": "bitget",
     "CRYPTOCOM": "cryptocom",
     "GEMINI": "gemini",
+    "HTX": "htx",
+    "BINGX": "bingx",
+    "LBANK": "lbank",
+    "BITMART": "bitmart",
+    "POLONIEX": "poloniex",
+    "COINEX": "coinex",
+    "ASCENDEX": "ascendex",
+    "PHEMEX": "phemex",
+    "WHITEBIT": "whitebit",
+    "BLOFIN": "blofin",
 }
 
 
@@ -283,6 +303,7 @@ def _direct_crypto_markets(
                         quote=quote,
                         market_symbol=f"{variant}/{quote.value}",
                         tradingview_exchange=exchange,
+                        match_priority=3,
                     )
                 )
     return markets
@@ -329,7 +350,7 @@ def _symbols_to_markets(
         if quote is None:
             continue
         symbol_base = _detect_base(item, symbol, quote.value)
-        if symbol_base not in wanted_bases and symbol not in wanted_tickers:
+        if not _is_symbol_ticker_match(symbol, wanted_bases, wanted_tickers):
             continue
         key = f"{exchange}:{symbol}"
         if key in seen:
@@ -343,9 +364,31 @@ def _symbols_to_markets(
                 quote=quote,
                 market_symbol=symbol,
                 tradingview_exchange=exchange,
+                match_priority=_symbol_match_priority(symbol, symbol_base, wanted_bases, wanted_tickers),
             )
         )
     return sorted(markets, key=_market_sort_key)
+
+
+def _is_symbol_ticker_match(symbol: str, wanted_bases: set[str], wanted_tickers: set[str]) -> bool:
+    if symbol in wanted_tickers:
+        return True
+    return any(symbol.startswith(base) for base in wanted_bases)
+
+
+def _symbol_match_priority(
+    symbol: str,
+    symbol_base: str,
+    wanted_bases: set[str],
+    wanted_tickers: set[str],
+) -> int:
+    if symbol in wanted_tickers:
+        return 3
+    if symbol_base in wanted_bases and any(symbol.startswith(base) for base in wanted_bases):
+        return 3
+    if symbol_base in wanted_bases:
+        return 2
+    return 1
 
 
 def _clean_exchange(item: dict[str, Any]) -> str:
@@ -472,6 +515,16 @@ _TV_EXCHANGE_PRIORITY = {
     "KRAKEN": 7,
     "BITFINEX": 8,
     "COINBASE": 9,
+    "HTX": 10,
+    "BINGX": 11,
+    "LBANK": 12,
+    "BITMART": 13,
+    "POLONIEX": 14,
+    "COINEX": 15,
+    "ASCENDEX": 16,
+    "PHEMEX": 17,
+    "WHITEBIT": 18,
+    "BLOFIN": 19,
 }
 
 

@@ -28,6 +28,7 @@ class MarketSymbol:
     quote: Quote
     market_symbol: str
     tradingview_exchange: str
+    match_priority: int = 1
 
     @property
     def tradingview_symbol(self) -> str:
