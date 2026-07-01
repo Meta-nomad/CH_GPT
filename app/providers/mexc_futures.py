@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timedelta, timezone
 import json
 from typing import Any
 from urllib.parse import quote, urlencode
@@ -12,6 +13,8 @@ MEXC_CONTRACT_DETAIL_URL = "https://contract.mexc.com/api/v1/contract/detail"
 MEXC_CONTRACT_TICKER_URL = "https://contract.mexc.com/api/v1/contract/ticker"
 MEXC_CONTRACT_DEPTH_URL = "https://contract.mexc.com/api/v1/contract/depth"
 REQUEST_TIMEOUT_SECONDS = 8
+MEXC_FUTURES_CACHE_VERSION = "mexc-systemic-v2"
+MEXC_FUTURES_CACHE_TTL_SECONDS = 300
 ACTIVE_STATES = {0, "0"}
 INACTIVE_STATE_TEXT = {"offline", "disabled", "delisted", "closed", "suspended"}
 
@@ -21,7 +24,7 @@ class MexcFuturesChecker:
 
     def __init__(self) -> None:
         self.client = ccxt.mexc({"enableRateLimit": True, "options": {"defaultType": "swap"}})
-        self._cache: dict[str, bool] = {}
+        self._cache: dict[str, dict[str, Any]] = {}
         self._markets: dict[str, Any] | None = None
 
     async def has_futures_market(self, base: str) -> bool | None:
@@ -30,11 +33,12 @@ class MexcFuturesChecker:
             return None
         return bool(diagnostic.get("available"))
 
-    async def diagnostic(self, base: str) -> dict[str, Any]:
+    async def diagnostic(self, base: str, *, force_refresh: bool = False) -> dict[str, Any]:
         normalized = _normalize_base(base)
         symbol = f"{normalized}_USDT"
-        if symbol in self._cache:
-            return {"symbol": symbol, "available": self._cache[symbol], "reason": "cache"}
+        cached = self._cache.get(symbol)
+        if not force_refresh and _cache_entry_valid(cached):
+            return {**cached["data"], "reason": "cache", "cache_version": MEXC_FUTURES_CACHE_VERSION}
 
         ccxt_result, api_result = await asyncio.gather(
             self._check_ccxt_swap(symbol, normalized),
@@ -53,9 +57,7 @@ class MexcFuturesChecker:
             available = bool(api_info["ok"])
             checked = api_checked
             decision_source = "contract_api_fallback" if api_checked else "unavailable"
-        if checked:
-            self._cache[symbol] = available
-        return {
+        data = {
             "symbol": symbol,
             "available": available,
             "checked": checked,
@@ -63,6 +65,13 @@ class MexcFuturesChecker:
             **{key: value for key, value in ccxt_info.items() if key not in {"checked", "ok"}},
             **{key: value for key, value in api_info.items() if key not in {"checked", "ok"}},
         }
+        if checked:
+            self._cache[symbol] = {
+                "version": MEXC_FUTURES_CACHE_VERSION,
+                "expires_at": datetime.now(timezone.utc) + timedelta(seconds=MEXC_FUTURES_CACHE_TTL_SECONDS),
+                "data": data,
+            }
+        return data
 
     async def close(self) -> None:
         await self.client.close()
@@ -80,6 +89,15 @@ class MexcFuturesChecker:
         if self._markets is None:
             self._markets = await self.client.load_markets()
         return self._markets
+
+
+def _cache_entry_valid(entry: dict[str, Any] | None) -> bool:
+    if not entry:
+        return False
+    if entry.get("version") != MEXC_FUTURES_CACHE_VERSION:
+        return False
+    expires_at = entry.get("expires_at")
+    return isinstance(expires_at, datetime) and expires_at > datetime.now(timezone.utc)
 
 
 def _check_contract_api_sync(symbol: str) -> dict[str, Any]:

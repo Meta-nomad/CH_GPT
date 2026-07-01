@@ -9,7 +9,7 @@ from app.providers.base import ExchangeProvider, ProviderError
 from app.storage.cache import AnalysisCache
 
 logger = logging.getLogger(__name__)
-CACHE_VERSION = "tv-mexc-systemic-v18"
+CACHE_VERSION = "tv-mexc-cache-v19"
 
 QUALITY_GAP_LIMIT = 0.05
 QUALITY_FLAT_LIMIT = 0.05
@@ -122,7 +122,7 @@ class ChartAnalyzer:
         diagnostic = getattr(checker, "diagnostic", None) if checker is not None else None
         if diagnostic is not None:
             try:
-                data = await diagnostic(normalized)
+                data = await diagnostic(normalized, force_refresh=True)
                 status = "Да" if data.get("available") else "Нет"
                 details = ", ".join(f"{key}={value}" for key, value in data.items() if key != "available")
                 return f"MEXC Futures для {normalized}: {status}\n{details}"
